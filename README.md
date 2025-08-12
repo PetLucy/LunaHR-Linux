@@ -13,7 +13,7 @@ If you have another Polar monitor, please test my script with your device and le
 
 ## Installs:
 
-uhhh... coming soon maybe... probably... maybe...
+uhhh... instructions coming soon maybe... probably... maybe...
 
 ### Avatar
 The needed prefabs is in the unitypackages (see links above). Avatar setup is as simple as any other VRCFury asset, and should be drag and drop onto your avatar.
