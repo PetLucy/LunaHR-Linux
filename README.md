@@ -2,7 +2,7 @@
 
 <img src="app_icon.png" width="200" height="200" />
 
-This fork hopes to be a decent port to Linux of LunaUwU's LunaHR. It's still a work in progress.
+This fork hopes to be a decent port to Linux of LunaUwU's [LunaHR](https://github.com/ImLunaUwU/LunaHR). It's still a work in progress.
 
 At this moment, its unsure if an H9 or other Polar devices would work with the PolarH10 script.
 
