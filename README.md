@@ -2,7 +2,7 @@
 
 <img src="app_icon.png" width="200" height="200" />
 
-This fork hopes to be a decent port to Linux of LunaUwU's [LunaHR](https://github.com/ImLunaUwU/LunaHR). It's still a work in progress.
+This fork hopes to be a decent port to Linux of LunaUwU's [LunaHR](https://github.com/ImLunaUwU/LunaHR). It's still a work in progress. This is a very early version, and I will continue to improve it.
 
 Polar H10 devices are the only devices that will work with this version. (For now?)
 
@@ -13,7 +13,13 @@ Polar H10 devices are the only devices that will work with this version. (For no
 
 ## Installs:
 
-uhhh... instructions coming soon maybe... probably... maybe...
+For now, you'll need to manually install and run:
+1) Clone the project
+2) Review and install the requirements (names in the requirements file are named based on the Arch package manager and AUR, exact names might vary based on distro)
+3) Run LunaHR.py with "python LunaHR.py" or to run without leaving a terminal open use "nohup python3 LunaHR.py >/dev/null 2>&1 & disown"
+
+### Usage:
+Usage is pretty straightforward. Ensure your Polar H10 is connected via bluetooth to your PC, then press the "Connect to Polar H10" button in the app. If it starts tracking your heart rate after a moment then you are good to go.
 
 ### Avatar
 The needed prefabs are in the unitypackages (see links above). Avatar setup is as simple as any other VRCFury asset, and should be able to drag and drop onto your avatar.
