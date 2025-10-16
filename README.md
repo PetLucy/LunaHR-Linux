@@ -4,10 +4,7 @@
 
 This fork hopes to be a decent port to Linux of LunaUwU's [LunaHR](https://github.com/ImLunaUwU/LunaHR). It's still a work in progress.
 
-At this moment, its unsure if an H9 or other Polar devices would work with the PolarH10 script.
-
-H10 and devices used with Pulsoid are the only confirmed to work at the current moment.
-If you have another Polar monitor, please test my script with your device and let me know if it works! <3
+Polar H10 devices are the only devices that will work with this version.
 
 [Consider supporting LunaUwU on Ko-Fi :3](https://ko-fi.com/imlunauwu)
 
@@ -16,14 +13,12 @@ If you have another Polar monitor, please test my script with your device and le
 uhhh... instructions coming soon maybe... probably... maybe...
 
 ### Avatar
-The needed prefabs is in the unitypackages (see links above). Avatar setup is as simple as any other VRCFury asset, and should be drag and drop onto your avatar.
+The needed prefabs are in the unitypackages (see links above). Avatar setup is as simple as any other VRCFury asset, and should be able to drag and drop onto your avatar.
 
 Before importing the unitypackage, please make sure you already have Poiyomi Toon (or Poi Pro) installed.
 Alternatively, if you do not want to use Poi, you'd lack the BPM effect unless you set it up yourself.
 
 The PC version now has heartbeat sounds!
-
-Please adjust the volumes to your likings as I turned them up after feedback said they were quiet.
 
 *LunaHR/HR Prefab should be dragged onto the avatar root itself.*
 
@@ -37,11 +32,7 @@ VRCFury should take care of all setup from this point.
 
 Feel free to customize materials to your liking.
 
-Because of a nice partnership with Pulsoid, if you sign up for the "BRO" plan through Luna's authentication or my affiliate link (coming soon), you will get a slight discount, and Luna will get a *slight* bit of change for their pocket :3
-
-They've intentionally made it so this deal benefits you (the user) more than themself :3
-
-## Credits and info
+## Credits and info (copied from main branch page)
 HEAVILY inspired by the (now inactive) project here: https://github.com/200Tigersbloxed/HRtoVRChat_OSC/
 
 This project does NOT use the same parameters as the one by 200Tigersbloxed. It does use less though.
