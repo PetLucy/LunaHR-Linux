@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=LunaHR
+Exec=lunahr
+Icon=lunahr
+Comment=Heart rate monitor for Polar H10 and VRChat
+Terminal=false
+Categories=Utility;
