@@ -1,6 +1,6 @@
 # LunaHR - Heart rate to VRChat through OSC 
 
-<img src="app_icon.png" width="200" height="200" />
+<img src="lunahr.png" width="200" height="200" />
 
 This fork hopes to be a decent port to Linux of LunaUwU's [LunaHR](https://github.com/ImLunaUwU/LunaHR). It's still a work in progress. This is a very early version, and I will continue to improve it.
 
