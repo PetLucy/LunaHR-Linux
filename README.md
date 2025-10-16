@@ -11,9 +11,13 @@ Polar H10 devices are the only devices that will work with this version. (For no
 [Please Only support me if you're feeling extra generous after supporting LunaUwU](https://ko-fi.com/pet_lucy)
 
 
-## Installs:
+### Installation:
 
-For now, you'll need to manually install and run:
+# Arch
+1) Clone the repository
+2) Run "makepkg -si" from within the directory
+
+Other distros for now:
 1) Clone the project (or dont, you really only need the LunaHR.py file)
 2) Review and install the requirements (names in the requirements file are named based on the Arch package manager and AUR, exact names might vary based on distro)
 3) Run LunaHR.py with "python LunaHR.py" or to run without leaving a terminal open use "nohup python3 LunaHR.py >/dev/null 2>&1 & disown"
