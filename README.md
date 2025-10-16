@@ -4,9 +4,12 @@
 
 This fork hopes to be a decent port to Linux of LunaUwU's [LunaHR](https://github.com/ImLunaUwU/LunaHR). It's still a work in progress.
 
-Polar H10 devices are the only devices that will work with this version.
+Polar H10 devices are the only devices that will work with this version. (For now?)
 
-[Consider supporting LunaUwU on Ko-Fi :3](https://ko-fi.com/imlunauwu)
+[Consider supporting the original creator LunaUwU on Ko-Fi :3](https://ko-fi.com/imlunauwu)
+
+[Please Only support me if you're feeling extra generous after supporting LunaUwU](https://ko-fi.com/pet_lucy)
+
 
 ## Installs:
 
