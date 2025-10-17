@@ -29,7 +29,7 @@ Ensure your Polar H10 is connected via bluetooth to your PC, then press the "Con
 If you have connection issues, please unpair and re-pair the device and try again.<br/>
 I will continue to try and smooth out any bugs in the connection process as much as I can.
 
-### Avatar (mostly coppied from the main branch)
+### Avatar (mostly coppied from the main branch README)
 The needed prefabs are in the unitypackages (see links above and in releases section). Avatar setup is as simple as any other VRCFury asset, and you should be able to drag and drop them onto your avatar.
 
 *Please note that I did not create these prefabs and all credit should go to the original creator ImLunaUwU*
@@ -51,7 +51,7 @@ VRCFury should take care of all setup from this point.
 
 Feel free to customize materials to your liking.
 
-## Credits and info (copied from main branch page)
+## Credits and info (copied from main branch README)
 HEAVILY inspired by the (now inactive) project here: https://github.com/200Tigersbloxed/HRtoVRChat_OSC/
 
 This project does NOT use the same parameters as the one by 200Tigersbloxed. It does use less though.
