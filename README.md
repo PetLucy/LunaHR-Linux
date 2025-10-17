@@ -1,8 +1,10 @@
-# LunaHR - Heart rate to VRChat through OSC 
+# LunaHR - Heart Rate To VRChat Through OSC 
 
 <img src="lunahr.png" width="200" height="200" />
 
-This fork hopes to be a decent port to Linux of [ImLunaUwU](https://github.com/ImLunaUwU)'s [LunaHR](https://github.com/ImLunaUwU/LunaHR). It's still a work in progress. This is a very early version, and I will continue to improve it.
+This fork is to port [ImLunaUwU](https://github.com/ImLunaUwU)'s [LunaHR](https://github.com/ImLunaUwU/LunaHR) to Linux.<br/>
+This allows us to use and create vrchat avatars with LunaHR assets while on Linux.<br/>
+It's still a work in progress. This is a very early version, and I will continue to improve it.
 
 Polar H10 devices are the only devices that will work with this version (for now?).
 
