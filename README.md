@@ -23,8 +23,9 @@ Polar H10 devices are the only devices that will work with this version. (For no
 3) Run lunahr (i.e. "./lunahr & disown")
 
 ### Usage:
-Usage is pretty straightforward. Ensure your Polar H10 is connected via bluetooth to your PC, then press the "Connect to Polar H10" button in the app. If it starts tracking your heart rate after a moment then you are good to go.
-If you have connection issues, please unpair and re-pair the device and try again. I will continue to try and smooth out any bugs in the connection process as much as I can.
+Ensure your Polar H10 is connected via bluetooth to your PC, then press the "Connect to Polar H10" button in the app. If it starts tracking your heart rate after a moment then you are good to go.
+If you have connection issues, please unpair and re-pair the device and try again. 
+I will continue to try and smooth out any bugs in the connection process as much as I can.
 
 ### Avatar
 The needed prefabs are in the unitypackages (see links above and in releases section). Avatar setup is as simple as any other VRCFury asset, and you should be able to drag and drop them onto your avatar.
