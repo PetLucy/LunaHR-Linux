@@ -11,22 +11,24 @@ Polar H10 devices are the only devices that will work with this version. (For no
 [Please Only support me if you're feeling extra generous after supporting LunaUwU](https://ko-fi.com/pet_lucy)
 
 
-### Installation:
+## Installation:
 
-# Arch
+### Arch
 1) Clone the repository
 2) Run "makepkg -si" from within the directory
 
-Other distros for now:
-1) Clone the project (or dont, you really only need the LunaHR.py file)
-2) Review and install the requirements (names in the requirements file are named based on the Arch package manager and AUR, exact names might vary based on distro)
-3) Run LunaHR.py with "python LunaHR.py" or to run without leaving a terminal open use "nohup python3 LunaHR.py >/dev/null 2>&1 & disown"
+### Other distros for now:
+1) Download the lunahr file from the releases section
+2) chmod +x lunahr
+3) Run lunahr (i.e. "./lunahr & disown")
 
 ### Usage:
 Usage is pretty straightforward. Ensure your Polar H10 is connected via bluetooth to your PC, then press the "Connect to Polar H10" button in the app. If it starts tracking your heart rate after a moment then you are good to go.
+If you have connection issues, please unpair and re-pair the device and try again. I will continue to try and smooth out any bugs in the connection process as much as I can.
 
 ### Avatar
-The needed prefabs are in the unitypackages (see links above). Avatar setup is as simple as any other VRCFury asset, and should be able to drag and drop onto your avatar.
+The needed prefabs are in the unitypackages (see links above and in releases section). Avatar setup is as simple as any other VRCFury asset, and you should be able to drag and drop them onto your avatar.
+*Please note that I did not create these prefabs and all credit should go to the original creator ImLunaUwU*
 
 Before importing the unitypackage, please make sure you already have Poiyomi Toon (or Poi Pro) installed.
 Alternatively, if you do not want to use Poi, you'd lack the BPM effect unless you set it up yourself.
