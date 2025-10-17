@@ -16,7 +16,7 @@ Polar H10 devices are the only devices that will work with this version (for now
 ### Arch
 1) Clone the repository
 2) Run "makepkg -si" from within the directory
-3) You can find the app in your application launcher or you can run it from any terminal with command "lunahr"<br/>
+3) You can find the app in your application launcher or you can run "lunahr" in any terminal<br/>
 *There is no need to keep the downloaded files (other than the unitypackage files) once you have run the makepkg command*
 
 ### Other distros for now
