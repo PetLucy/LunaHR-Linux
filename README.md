@@ -24,7 +24,9 @@ Polar H10 devices are the only devices that will work with this version (for now
 2) chmod +x lunahr.AppImage
 3) Run lunahr.AppImage (i.e. "./lunahr.AppImage & disown")
 
-### Usage
+## Usage
+
+### Application
 Ensure your Polar H10 is connected via bluetooth to your PC, then press the "Connect to Polar H10" button in the app. If it starts tracking your heart rate after a moment then you are good to go.<br/>
 If you have connection issues, please unpair and re-pair the device and try again.<br/>
 I will continue to try and smooth out any bugs in the connection process as much as I can.
