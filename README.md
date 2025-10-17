@@ -4,7 +4,7 @@
 
 This fork hopes to be a decent port to Linux of [ImLunaUwU](https://github.com/ImLunaUwU)'s [LunaHR](https://github.com/ImLunaUwU/LunaHR). It's still a work in progress. This is a very early version, and I will continue to improve it.
 
-Polar H10 devices are the only devices that will work with this version. (for now?)
+Polar H10 devices are the only devices that will work with this version (for now?).
 
 [Consider supporting the original creator LunaUwU on Ko-Fi :3](https://ko-fi.com/imlunauwu)
 
@@ -16,9 +16,8 @@ Polar H10 devices are the only devices that will work with this version. (for no
 ### Arch
 1) Clone the repository
 2) Run "makepkg -si" from within the directory
-3) You can find the app in your applicatio launcher or you can run it from any terminal with command "lunahr"
-
-*There is no need to keep the downloaded files (other than the unitypackage files) onece you have run the makepkg command*
+3) You can find the app in your application launcher or you can run it from any terminal with command "lunahr"<br/>
+*There is no need to keep the downloaded files (other than the unitypackage files) once you have run the makepkg command*
 
 ### Other distros for now
 1) Download the lunahr.AppImage file from the releases section
@@ -26,13 +25,11 @@ Polar H10 devices are the only devices that will work with this version. (for no
 3) Run lunahr.AppImage (i.e. "./lunahr.AppImage & disown")
 
 ### Usage
-Ensure your Polar H10 is connected via bluetooth to your PC, then press the "Connect to Polar H10" button in the app. If it starts tracking your heart rate after a moment then you are good to go.
-
-If you have connection issues, please unpair and re-pair the device and try again. 
-
+Ensure your Polar H10 is connected via bluetooth to your PC, then press the "Connect to Polar H10" button in the app. If it starts tracking your heart rate after a moment then you are good to go.<br/>
+If you have connection issues, please unpair and re-pair the device and try again.<br/>
 I will continue to try and smooth out any bugs in the connection process as much as I can.
 
-### Avatar
+### Avatar (mostly coppied from the main branch)
 The needed prefabs are in the unitypackages (see links above and in releases section). Avatar setup is as simple as any other VRCFury asset, and you should be able to drag and drop them onto your avatar.
 
 *Please note that I did not create these prefabs and all credit should go to the original creator ImLunaUwU*
