@@ -24,7 +24,7 @@ Polar H10 devices are the only devices that will work with this version (for now
 ### Other distros for now
 1) Download the lunahr.AppImage file from the releases section
 2) `chmod +x lunahr.AppImage`
-3) Run lunahr.AppImage, i.e. `./lunahr.AppImage &`
+3) Run lunahr.AppImage, i.e. `./lunahr.AppImage & disown`
 
 ## Usage
 
