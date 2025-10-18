@@ -17,14 +17,14 @@ Polar H10 devices are the only devices that will work with this version (for now
 
 ### Arch
 1) Clone the repository
-2) Run "makepkg -si" from within the directory
-3) You can find the app in your application launcher or you can run "lunahr" in any terminal<br/>
+2) Run `makepkg -si` from within the directory
+3) You should now find the app in your application launcher or you can run `lunahr` in any terminal<br/>
 *There is no need to keep the downloaded files (other than the unitypackage files) once you have run the makepkg command*
 
 ### Other distros for now
 1) Download the lunahr.AppImage file from the releases section
-2) chmod +x lunahr.AppImage
-3) Run lunahr.AppImage (i.e. "./lunahr.AppImage & disown")
+2) `chmod +x lunahr.AppImage`
+3) Run lunahr.AppImage, i.e. `./lunahr.AppImage &`
 
 ## Usage
 
@@ -33,10 +33,10 @@ Ensure your Polar H10 is connected via bluetooth to your PC, then press the "Con
 If you have connection issues, please unpair and re-pair the device and try again.<br/>
 I will continue to try and smooth out any bugs in the connection process as much as I can.
 
-### Avatar (mostly coppied from the main branch README)
+### Avatar (mostly copied from the main branch README)
 The needed prefabs are in the unitypackages (see links above and in releases section). Avatar setup is as simple as any other VRCFury asset, and you should be able to drag and drop them onto your avatar.
 
-*Please note that I did not create these prefabs and all credit should go to the original creator ImLunaUwU*
+*Please note that I did not create these prefabs; all credit should go to the original creator ImLunaUwU*
 
 Before importing the unitypackage, please make sure you already have Poiyomi Toon (or Poi Pro) installed.
 Alternatively, if you do not want to use Poi, you'd lack the BPM effect unless you set it up yourself.
@@ -59,7 +59,7 @@ Feel free to customize materials to your liking.
 HEAVILY inspired by the (now inactive) project here: https://github.com/200Tigersbloxed/HRtoVRChat_OSC/
 
 This project does NOT use the same parameters as the one by 200Tigersbloxed. It does use less though.
-This is both because they're not meant to be the same, nor compatible, and also becuase everything in that project is outdated and the Unity files doesn't really work properly anymore.
+This is both because they're not meant to be the same, nor compatible, and also because everything in that project is outdated and the Unity files doesn't really work properly anymore.
 *Feel free to use this as a (semi-)direct replacement.*
 
 PC only prefab uses the [Simple Counter Shader](https://www.patreon.com/posts/simple-counter-62864361) from [RED_SIM](https://www.patreon.com/red_sim).
