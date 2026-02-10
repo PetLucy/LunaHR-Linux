@@ -13,7 +13,7 @@ I might try to add support for more devices in the future.
 [Please Only support me if you're feeling extra generous after supporting LunaUwU](https://ko-fi.com/pet_lucy)
 
 
-## Installation:
+## Installation
 
 ### Arch
 1) Clone the repository
