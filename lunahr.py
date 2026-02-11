@@ -11,7 +11,8 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QPushButton, QLabel,
     QVBoxLayout, QHBoxLayout, QWidget, QMessageBox
 )
-from PySide6.QtCore import QThread, Signal, Qt, QTimer
+from PySide6.QtCore import QThread, Signal, Qt, QTimer, QUrl
+from PySide6.QtGui import QDesktopServices
 
 from bleak import BleakScanner, BleakClient
 from pythonosc.udp_client import SimpleUDPClient
@@ -36,7 +37,6 @@ LOG_FILE = LOG_DIR / "lunahr.log"
 logger = logging.getLogger("lunahr")
 logger.setLevel(logging.INFO)
 
-# Avoid duplicate handlers if reloaded
 if not logger.handlers:
     handler = RotatingFileHandler(
         str(LOG_FILE),
@@ -55,7 +55,6 @@ logger.propagate = False
 # -----------------------
 class TimeAxis(DateAxisItem):
     def tickStrings(self, values, scale, spacing):
-        # values are epoch timestamps (float)
         out = []
         for v in values:
             try:
@@ -63,6 +62,39 @@ class TimeAxis(DateAxisItem):
             except Exception:
                 out.append("")
         return out
+
+
+# -----------------------
+# ViewBox with "user interacted" hook
+# -----------------------
+class LiveViewBox(pg.ViewBox):
+    """
+    A ViewBox that calls a callback whenever the user pans/zooms.
+    This makes "explore mode" reliable across pyqtgraph versions.
+    """
+    def __init__(self, on_user_interaction=None, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._on_user_interaction = on_user_interaction
+
+    def _touch(self):
+        if callable(self._on_user_interaction):
+            self._on_user_interaction()
+
+    def mouseDragEvent(self, ev, axis=None):
+        self._touch()
+        super().mouseDragEvent(ev, axis=axis)
+
+    def wheelEvent(self, ev, axis=None):
+        self._touch()
+        super().wheelEvent(ev, axis=axis)
+
+    def mouseClickEvent(self, ev):
+        self._touch()
+        super().mouseClickEvent(ev)
+
+    def mouseDoubleClickEvent(self, ev):
+        self._touch()
+        super().mouseDoubleClickEvent(ev)
 
 
 # -----------------------
@@ -117,14 +149,14 @@ class HRWorker(QThread):
             logger.error("Polar H10 not found.")
             return
 
-        # Let MainWindow know which address to use for RSSI scans
         self.device_address_signal.emit(device.address)
 
         self.status_signal.emit(f"Connecting to {device.name}...")
         logger.info(f"Connecting to {device.name} ({device.address})")
 
         try:
-            async with BleakClient(device) as client:
+            # Increased timeout helps with BlueZ service discovery stalls
+            async with BleakClient(device, timeout=20.0) as client:
                 self.status_signal.emit("Connected. Streaming heart rate...")
                 logger.info("Connected. Starting HR notifications.")
 
@@ -157,7 +189,7 @@ class HRWorker(QThread):
 
 
 # -----------------------
-# Main Window (UI + OSC + Logging + Reconnect)
+# Main Window
 # -----------------------
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -165,38 +197,47 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("LunaHR - Polar H10")
         self.resize(900, 600)
 
-        # OSC setup
         self.osc_client = SimpleUDPClient("127.0.0.1", 9000)
-
-        # Logging enabled by default (file logging)
-        self.logging_enabled = True
-        logger.disabled = False
         logger.info("LunaHR started.")
 
-        # Theme state
-        self.dark_mode = True  # default dark mode
+        # Theme
+        self.dark_mode = True
 
         # BLE / watchdog state
         self.worker = None
         self.last_hr_time = None
         self.last_hr_value = None
-
-        self.reconnect_timeout = 30  # seconds without HR => reconnect
+        self.reconnect_timeout = 30
         self.reconnecting = False
 
-        # RSSI tracking
+        # Reconnect scheduling guard (prevents "reconnect storms")
+        self._reconnect_scheduled = False
+        self.reconnect_delay_seconds = 5
+
+        # Reconnect overall limit (no backoff, just give up after X seconds)
+        self.reconnect_max_seconds = 180  # 3 minutes
+        self.reconnect_started_at = None  # epoch time when reconnect cycle began
+
+        # RSSI state
         self.device_address = None
         self.last_rssi_value = None
         self.last_rssi_time = None
         self.rssi_worker = None
 
-        # Top controls
+        # Graph live-follow behavior
+        self.window_seconds = 30 * 60      # 30 minutes visible when live
+        self.follow_live = True
+        self.last_user_interaction = None
+        self.snap_back_seconds = 30        # auto return to live after 30s
+        self._programmatic_range_change = False
+
+        # Buttons (top row)
         self.connect_btn = QPushButton("Connect to Polar H10")
         self.connect_btn.clicked.connect(self.on_connect_clicked)
 
-        self.log_toggle_btn = QPushButton("📝 Logging: ON")
-        self.log_toggle_btn.setToolTip("Enable/Disable file logging")
-        self.log_toggle_btn.clicked.connect(self.toggle_logging)
+        self.open_logs_btn = QPushButton("📂 Open Logs")
+        self.open_logs_btn.setToolTip(str(LOG_DIR))
+        self.open_logs_btn.clicked.connect(self.open_log_dir)
 
         self.theme_btn = QPushButton("🌙 Dark")
         self.theme_btn.setToolTip("Toggle light/dark theme")
@@ -205,24 +246,35 @@ class MainWindow(QMainWindow):
         top_row = QHBoxLayout()
         top_row.addWidget(self.connect_btn)
         top_row.addStretch(1)
-        top_row.addWidget(self.log_toggle_btn)
+        top_row.addWidget(self.open_logs_btn)
         top_row.addWidget(self.theme_btn)
 
-        # Status + current HR
+        # Live button row (right-aligned, closer to graph)
+        self.live_btn = QPushButton("🔴 Live")
+        self.live_btn.setToolTip("Snap back to live tracking")
+        self.live_btn.clicked.connect(self.snap_to_live)
+
+        live_row = QHBoxLayout()
+        live_row.addStretch(1)
+        live_row.addWidget(self.live_btn)
+
+        # Status + HR label
         self.status_label = QLabel("Status: Idle")
         self.hr_label = QLabel("Heart Rate: -- bpm")
         self.hr_label.setAlignment(Qt.AlignLeft)
         self.hr_label.setStyleSheet("font-size: 24px; font-weight: bold;")
 
-        # Graph with time axis HH:MM:SS
+        # Graph
         time_axis = TimeAxis(orientation="bottom")
-        self.plot = pg.PlotWidget(axisItems={"bottom": time_axis})
+        self.viewbox = LiveViewBox(on_user_interaction=self.on_user_interaction)
+        self.plot = pg.PlotWidget(viewBox=self.viewbox, axisItems={"bottom": time_axis})
         self.plot.showGrid(x=True, y=True)
         self.plot.setLabel("left", "BPM")
         self.plot.setLabel("bottom", "Time (HH:MM:SS)")
+        self.viewbox.setMouseEnabled(x=True, y=False)  # pan/zoom in X, keep Y stable-ish
 
         self.x_data = []  # epoch timestamps
-        self.y_data = []  # bpm values
+        self.y_data = []  # bpm
         self.curve = self.plot.plot([], [], pen=pg.mkPen(width=2))
 
         # Layout
@@ -230,6 +282,7 @@ class MainWindow(QMainWindow):
         layout.addLayout(top_row)
         layout.addWidget(self.status_label)
         layout.addWidget(self.hr_label)
+        layout.addLayout(live_row)      # moved live button closer to the graph
         layout.addWidget(self.plot)
 
         container = QWidget()
@@ -238,30 +291,93 @@ class MainWindow(QMainWindow):
 
         self.apply_theme()
 
-        # Watchdog: check if HR has stopped
+        # Watchdog timer for HR stall reconnect
         self.watchdog = QTimer()
         self.watchdog.timeout.connect(self.check_heartbeat_timeout)
-        self.watchdog.start(5000)  # every 5 seconds
+        self.watchdog.start(5000)
 
-        # Heartbeat logger: once per minute
+        # Heartbeat logger
         self.heartbeat_timer = QTimer()
         self.heartbeat_timer.timeout.connect(self.log_heartbeat_status)
-        self.heartbeat_timer.start(60000)  # 60 seconds
+        self.heartbeat_timer.start(60000)
+
+        # Snap-back timer (checks explore idle time)
+        self.snapback_timer = QTimer()
+        self.snapback_timer.timeout.connect(self.check_snapback)
+        self.snapback_timer.start(1000)
 
     # ---------------------------
-    # Logging toggle
+    # Helpers: entering/leaving reconnect cycle
     # ---------------------------
-    def toggle_logging(self):
-        self.logging_enabled = not self.logging_enabled
-        if self.logging_enabled:
-            self.log_toggle_btn.setText("📝 Logging: ON")
-            logger.disabled = False
-            logger.info("Logging enabled by user.")
-        else:
-            # Log this before disabling
-            logger.info("Logging disabled by user.")
-            self.log_toggle_btn.setText("📝 Logging: OFF")
-            logger.disabled = True
+    def _enter_reconnect_cycle(self):
+        if not self.reconnect_started_at:
+            self.reconnect_started_at = time.time()
+            logger.info(f"Reconnect cycle started (max {self.reconnect_max_seconds}s).")
+
+    def _exit_reconnect_cycle_to_idle(self, reason: str):
+        # Stop trying, go back to idle, let user click Connect again
+        self.reconnecting = False
+        self._reconnect_scheduled = False
+        self.reconnect_started_at = None
+        self.last_hr_time = None
+
+        self.status_label.setText(f"Status: Idle ({reason})")
+        logger.warning(f"Reconnect cycle ended → Idle ({reason})")
+
+        self.connect_btn.setEnabled(True)
+
+    def _reconnect_time_exceeded(self) -> bool:
+        if not self.reconnect_started_at:
+            return False
+        return (time.time() - self.reconnect_started_at) >= self.reconnect_max_seconds
+
+    # ---------------------------
+    # Open logs dir
+    # ---------------------------
+    def open_log_dir(self):
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(LOG_DIR)))
+
+    # ---------------------------
+    # Explore/live tracking
+    # ---------------------------
+    def on_user_interaction(self):
+        if self._programmatic_range_change:
+            return
+
+        if self.follow_live:
+            self.follow_live = False
+            logger.info("Graph set to explore mode (live-follow paused).")
+
+        self.last_user_interaction = time.time()
+
+    def snap_to_live(self):
+        self.follow_live = True
+        self.last_user_interaction = None
+        self.update_live_view()
+
+    def check_snapback(self):
+        if self.follow_live:
+            return
+        if not self.last_user_interaction:
+            return
+        if (time.time() - self.last_user_interaction) >= self.snap_back_seconds:
+            logger.info("Snap-back timer triggered; returning to live-follow.")
+            self.snap_to_live()
+
+    def update_live_view(self):
+        if not self.follow_live:
+            return
+        if not self.x_data:
+            return
+
+        now = self.x_data[-1]
+        start = now - self.window_seconds
+
+        self._programmatic_range_change = True
+        try:
+            self.plot.setXRange(start, now, padding=0.0)
+        finally:
+            self._programmatic_range_change = False
 
     # ---------------------------
     # Theme
@@ -271,6 +387,8 @@ class MainWindow(QMainWindow):
         self.apply_theme()
 
     def apply_theme(self):
+        pink = "#ff4fd8"
+
         if self.dark_mode:
             self.theme_btn.setText("🌙 Dark")
             self.setStyleSheet("""
@@ -283,7 +401,6 @@ class MainWindow(QMainWindow):
             self.plot.getAxis("bottom").setPen(pg.mkPen("#EAEAEA"))
             self.plot.getAxis("left").setTextPen(pg.mkPen("#EAEAEA"))
             self.plot.getAxis("bottom").setTextPen(pg.mkPen("#EAEAEA"))
-            self.curve.setPen(pg.mkPen("#00D1FF", width=2))
         else:
             self.theme_btn.setText("☀️ Light")
             self.setStyleSheet("""
@@ -296,25 +413,37 @@ class MainWindow(QMainWindow):
             self.plot.getAxis("bottom").setPen(pg.mkPen("#111111"))
             self.plot.getAxis("left").setTextPen(pg.mkPen("#111111"))
             self.plot.getAxis("bottom").setTextPen(pg.mkPen("#111111"))
-            self.curve.setPen(pg.mkPen("#D12C2C", width=2))
+
+        self.curve.setPen(pg.mkPen(pink, width=2))
 
     # ---------------------------
-    # Connect / worker start
+    # BLE wiring
     # ---------------------------
     def on_connect_clicked(self):
         self.connect_btn.setEnabled(False)
+
+        # User initiated connection: reset reconnect cycle state
+        self.reconnecting = False
+        self._reconnect_scheduled = False
+        self.reconnect_started_at = None
+
         self.status_label.setText("Status: Connecting…")
         self.start_worker()
 
     def start_worker(self):
-        # Stop existing worker if any
         if self.worker:
             try:
                 self.worker.stop()
                 self.worker.quit()
-                self.worker.wait(1500)
+                self.worker.wait(3000)
             except Exception:
                 pass
+
+        # Safety guard: don't start a new worker if the old one is still running
+        if self.worker and self.worker.isRunning():
+            logger.warning("Old HRWorker still running; delaying restart by 1 second.")
+            QTimer.singleShot(1000, self.start_worker)
+            return
 
         self.worker = HRWorker()
         self.worker.heart_rate_signal.connect(self.on_hr_update)
@@ -322,34 +451,36 @@ class MainWindow(QMainWindow):
         self.worker.device_address_signal.connect(self.on_device_address)
         self.worker.start()
 
-        if self.logging_enabled:
-            logger.info("HRWorker started.")
+        logger.info("HRWorker started.")
 
     def on_device_address(self, addr: str):
         self.device_address = addr
-        if self.logging_enabled:
-            logger.info(f"Device address set for RSSI scans: {addr}")
+        logger.info(f"Device address set for RSSI scans: {addr}")
 
     # ---------------------------
     # HR updates
     # ---------------------------
     def on_hr_update(self, bpm: int):
+        # Reconnect is considered successful once HR resumes
+        if self.reconnecting:
+            self.reconnecting = False
+            self._reconnect_scheduled = False
+            self.reconnect_started_at = None
+            logger.info("Reconnected successfully (HR received).")
+
         self.last_hr_time = time.time()
         self.last_hr_value = bpm
 
         self.hr_label.setText(f"Heart Rate: {bpm} bpm")
 
-        # Graph update uses real epoch timestamps
         now_ts = time.time()
         self.x_data.append(now_ts)
         self.y_data.append(bpm)
         self.curve.setData(self.x_data, self.y_data)
 
-        # Log HR line to file
-        if self.logging_enabled:
-            logger.info(f"HR {bpm} bpm")
+        logger.info(f"HR {bpm} bpm")
 
-        # Send OSC
+        self.update_live_view()
         self.send_heart_rate_osc(bpm)
 
     # ---------------------------
@@ -366,9 +497,7 @@ class MainWindow(QMainWindow):
             self.osc_client.send_message("/avatar/parameters/hr/hundreds_hr", hundreds_hr)
             self.osc_client.send_message("/avatar/parameters/hr/heart_rate", heart_rate)
         except Exception as e:
-            if self.logging_enabled:
-                logger.error(f"Error sending OSC: {e}")
-            # keep stdout print for dev/testing
+            logger.error(f"Error sending OSC: {e}")
             print(f"Error sending OSC: {e}")
 
     # ---------------------------
@@ -376,57 +505,100 @@ class MainWindow(QMainWindow):
     # ---------------------------
     def on_status_update(self, text: str):
         self.status_label.setText(f"Status: {text}")
-        if self.logging_enabled:
-            logger.info(f"Status: {text}")
+        logger.info(f"Status: {text}")
 
-        # Only show a popup if we aren't in a reconnect loop
-        if ("error" in text.lower() or "not found" in text.lower() or "failed" in text.lower()) and not self.reconnecting:
+        lower = text.lower()
+
+        # If the worker reports a connection error, proactively reconnect (within the 3-min window)
+        if "connection error" in lower:
+            if not self.reconnecting:
+                self.reconnecting = True
+                self._enter_reconnect_cycle()
+
+            if self._reconnect_time_exceeded():
+                self._exit_reconnect_cycle_to_idle("reconnect timeout")
+                return
+
+            # Prevent watchdog cascade
+            self.last_hr_time = None
+            logger.warning("Connection error reported; initiating reconnect.")
+            self.reconnect()
+            return
+
+        if ("error" in lower or "not found" in lower or "failed" in lower) and not self.reconnecting:
             QMessageBox.warning(self, "BLE", text)
             self.connect_btn.setEnabled(True)
 
     # ---------------------------
-    # Watchdog: reconnect if HR stalls
+    # Watchdog reconnect
     # ---------------------------
     def check_heartbeat_timeout(self):
+        # If we are already reconnecting or have one scheduled, don't trigger again
+        if self.reconnecting or self._reconnect_scheduled:
+            # If reconnecting, check if we should give up and go idle
+            if self.reconnecting and self._reconnect_time_exceeded():
+                self._exit_reconnect_cycle_to_idle("reconnect timeout")
+            return
+
         if not self.worker or not self.last_hr_time:
             return
 
         elapsed = time.time() - self.last_hr_time
-        if elapsed > self.reconnect_timeout and not self.reconnecting:
+        if elapsed > self.reconnect_timeout:
             self.reconnecting = True
+            self._enter_reconnect_cycle()
+
+            # IMPORTANT: clear so watchdog doesn't repeatedly trigger while reconnecting
+            self.last_hr_time = None
+
             msg = f"No HR received for {int(elapsed)}s → Reconnecting..."
             self.status_label.setText(f"Status: {msg}")
-            if self.logging_enabled:
-                logger.warning(msg)
+            logger.warning(msg)
+
+            if self._reconnect_time_exceeded():
+                self._exit_reconnect_cycle_to_idle("reconnect timeout")
+                return
+
             self.reconnect()
 
     def reconnect(self):
+        # Ensure only one reconnect attempt is scheduled at a time
+        if self._reconnect_scheduled:
+            return
+
+        # If we’re reconnecting too long, stop.
+        if self.reconnecting and self._reconnect_time_exceeded():
+            self._exit_reconnect_cycle_to_idle("reconnect timeout")
+            return
+
+        self._reconnect_scheduled = True
+
         try:
             if self.worker:
                 self.worker.stop()
                 self.worker.quit()
-                self.worker.wait(1500)
+                self.worker.wait(3000)
         except Exception:
             pass
 
-        if self.logging_enabled:
-            logger.info("Attempting BLE reconnect in 5 seconds...")
-
-        QTimer.singleShot(5000, self._restart_connection)
+        logger.info(f"Attempting BLE reconnect in {self.reconnect_delay_seconds} seconds...")
+        QTimer.singleShot(int(self.reconnect_delay_seconds * 1000), self._restart_connection)
 
     def _restart_connection(self):
-        self.reconnecting = False
+        # Keep reconnecting=True until HR resumes
+        self._reconnect_scheduled = False
+
+        if self.reconnecting and self._reconnect_time_exceeded():
+            self._exit_reconnect_cycle_to_idle("reconnect timeout")
+            return
+
         self.status_label.setText("Status: Reconnecting…")
         self.start_worker()
 
     # ---------------------------
-    # Heartbeat log once per minute + RSSI
+    # Heartbeat log + RSSI
     # ---------------------------
     def log_heartbeat_status(self):
-        if not self.logging_enabled:
-            return
-
-        # Kick an RSSI update in the background (best effort)
         self.request_rssi_update()
 
         if self.last_hr_time and self.last_hr_value is not None:
@@ -444,8 +616,6 @@ class MainWindow(QMainWindow):
     def request_rssi_update(self):
         if not self.device_address:
             return
-
-        # Avoid overlapping scans
         if self.rssi_worker and self.rssi_worker.isRunning():
             return
 
@@ -457,16 +627,12 @@ class MainWindow(QMainWindow):
         self.last_rssi_time = time.time()
         self.last_rssi_value = rssi if isinstance(rssi, int) else None
 
-        if self.logging_enabled:
-            if self.last_rssi_value is None:
-                logger.info("RSSI scan: n/a")
-            else:
-                logger.info(f"RSSI scan: {self.last_rssi_value} dBm")
+        if self.last_rssi_value is None:
+            logger.info("RSSI scan: n/a")
+        else:
+            logger.info(f"RSSI scan: {self.last_rssi_value} dBm")
 
 
-# ---------------------------
-# Entry point
-# ---------------------------
 def main():
     app = QApplication(sys.argv)
     win = MainWindow()
