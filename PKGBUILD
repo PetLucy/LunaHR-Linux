@@ -16,7 +16,7 @@ depends=(
 )
 
 source=(https://github.com/PetLucy/LunaHR-Linux/archive/refs/tags/v${pkgver}.tar.gz)
-sha256sums=('bf51b7fb0e64b35f8a30a21942d10d958b1914ffe677a507ceed0d1cd0e8f06d')
+sha256sums=('e99d35f1ffef002cfac191aa960c2016c4c8ba8194885de0e0bff3b5f0fb56c2')
 
 package() {
   cd "$srcdir/LunaHR-Linux-${pkgver}"
