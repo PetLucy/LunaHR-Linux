@@ -18,7 +18,7 @@ I might try to add support for more devices in the future.
 ### Arch
 ``yay -S lunahr``
 
-### Other distros for now
+### Other distros
 1) Download the lunahr.AppImage file from the releases section
 2) `chmod +x lunahr.AppImage`
 3) Run lunahr.AppImage, i.e. `./lunahr.AppImage & disown`
