@@ -6,7 +6,7 @@ This fork is to port [ImLunaUwU](https://github.com/ImLunaUwU)'s [LunaHR](https:
 This allows us to use and create vrchat avatars with LunaHR assets while on Linux.<br/>
 
 ### Currently, this version only supports Polar H10 devices.
-I might try to add support for more devices in the future.
+Pulsoid support is coming soon!
 
 [Consider supporting the original creator LunaUwU on Ko-Fi :3](https://ko-fi.com/imlunauwu)
 
