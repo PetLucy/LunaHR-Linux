@@ -16,7 +16,7 @@ I might try to add support for more devices in the future.
 ## Installation
 
 ### Arch
-1) yay -S lunahr
+``yay -S lunahr``
 
 ### Other distros for now
 1) Download the lunahr.AppImage file from the releases section
