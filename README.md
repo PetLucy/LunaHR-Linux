@@ -16,10 +16,7 @@ I might try to add support for more devices in the future.
 ## Installation
 
 ### Arch
-1) Clone the repository
-2) Run `makepkg -si` from within the directory
-3) You should now find the app in your application launcher or you can run `lunahr` in any terminal<br/>
-*There is no need to keep the downloaded files (other than the unitypackage files) once you have run the makepkg command*
+1) yay -S lunahr
 
 ### Other distros for now
 1) Download the lunahr.AppImage file from the releases section
