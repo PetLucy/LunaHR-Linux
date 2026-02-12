@@ -1,5 +1,5 @@
 pkgname=lunahr
-pkgver=2.1
+pkgver=2.1.1
 pkgrel=1
 pkgdesc="Polar H10 heart rate monitor app with OSC and logging"
 arch=('x86_64')
