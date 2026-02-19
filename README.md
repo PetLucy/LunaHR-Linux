@@ -27,9 +27,18 @@ This allows us to use and create vrchat avatars with LunaHR assets while on Linu
 ## Usage
 
 ### Application
-Ensure your Polar H10 is connected via bluetooth to your PC, then press the "Connect to Polar H10" button in the app. If it starts tracking your heart rate after a moment then you are good to go.<br/>
+#### Polar H10
+1) Verify Polar H10 mode is selected in the app settings.
+2) Ensure your Polar H10 is connected via bluetooth to your PC.
+3) Press the "Connect" button in the app.
+
 If you have connection issues, please unpair and re-pair the device and try again.<br/>
-I will continue to try and smooth out any bugs in the connection process as much as I can.
+
+#### Pulsoid\
+1) Verify Pulsoid mode is selected in the app settings.
+2) Get/create a token for your pulsoid account at (https://pulsoid.net/ui/keys).
+3) Add your pulsoid token in the settings section of the application and save.
+4) Press "Connect".
 
 ### Avatar (mostly copied from the main branch README)
 The needed prefabs are in the unitypackages (see links above and in releases section). Avatar setup is as simple as any other VRCFury asset, and you should be able to drag and drop them onto your avatar.
