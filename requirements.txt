@@ -3,3 +3,4 @@ pyqtgraph>=0.13
 bleak>=0.21
 python-osc>=1.8
 colorama>=0.4
+websockets>=11.0
