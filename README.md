@@ -36,7 +36,7 @@ If you have connection issues, please unpair and re-pair the device and try agai
 
 #### Pulsoid\
 1) Verify Pulsoid mode is selected in the app settings.
-2) Get/create a token for your pulsoid account at (https://pulsoid.net/ui/keys).
+2) Get/create a token for your pulsoid account at https://pulsoid.net/ui/keys
 3) Add your pulsoid token in the settings section of the application and save.
 4) Press "Connect".
 
