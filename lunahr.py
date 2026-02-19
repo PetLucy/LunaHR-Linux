@@ -3,13 +3,15 @@ import asyncio
 import time
 import logging
 import traceback
+import json
 from datetime import datetime
 from pathlib import Path
 from logging.handlers import RotatingFileHandler
 
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QPushButton, QLabel,
-    QVBoxLayout, QHBoxLayout, QWidget, QMessageBox
+    QVBoxLayout, QHBoxLayout, QWidget, QMessageBox,
+    QDialog, QFormLayout, QLineEdit, QComboBox, QDialogButtonBox
 )
 from PySide6.QtCore import QThread, Signal, Qt, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices
@@ -20,20 +22,80 @@ from pythonosc.udp_client import SimpleUDPClient
 import pyqtgraph as pg
 from pyqtgraph.graphicsItems.DateAxisItem import DateAxisItem
 
+# Pulsoid source
+import websockets
+
 
 # -----------------------
 # Constants
 # -----------------------
 HR_CHAR_UUID = "00002a37-0000-1000-8000-00805f9b34fb"
+PULSOID_WS_URL = "wss://dev.pulsoid.net/api/v1/data/real_time?access_token={token}"
+
+# Reconnect / DBus churn controls
+RECONNECT_COOLDOWN_SECONDS = 15       # prevents rapid retry storms
+RSSI_MIN_INTERVAL_SECONDS = 60        # rate-limit RSSI scans
+
+
+# -----------------------
+# Paths / Config
+# -----------------------
+APP_CONFIG_DIR = Path.home() / ".config" / "lunahr"
+APP_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+CONFIG_FILE = APP_CONFIG_DIR / "config.json"
+
+LOG_DIR = Path.home() / ".local/share/LunaHR/logs"
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+LOG_FILE = LOG_DIR / "lunahr.log"
+
+DEFAULT_CONFIG = {
+    "source": "polar",        # "polar" or "pulsoid"
+    "pulsoid_token": "",
+    "osc_host": "127.0.0.1",
+    "osc_ports": [9000],      # list of ints
+    "theme": "dark",          # "dark" or "light"
+}
+
+
+def load_config() -> dict:
+    if not CONFIG_FILE.exists():
+        save_config(DEFAULT_CONFIG)
+        return dict(DEFAULT_CONFIG)
+
+    try:
+        data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+        cfg = dict(DEFAULT_CONFIG)
+        cfg.update(data or {})
+
+        ports = cfg.get("osc_ports", [9000])
+        if isinstance(ports, int):
+            ports = [ports]
+        if isinstance(ports, str):
+            ports = [int(p.strip()) for p in ports.split(",") if p.strip().isdigit()]
+        cfg["osc_ports"] = ports if ports else [9000]
+
+        if cfg.get("theme") not in ("dark", "light"):
+            cfg["theme"] = "dark"
+        if cfg.get("source") not in ("polar", "pulsoid"):
+            cfg["source"] = "polar"
+        if not isinstance(cfg.get("pulsoid_token", ""), str):
+            cfg["pulsoid_token"] = ""
+
+        return cfg
+    except Exception:
+        return dict(DEFAULT_CONFIG)
+
+
+def save_config(cfg: dict) -> None:
+    safe = dict(DEFAULT_CONFIG)
+    safe.update(cfg or {})
+    APP_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    CONFIG_FILE.write_text(json.dumps(safe, indent=2), encoding="utf-8")
 
 
 # -----------------------
 # Logging (rotating logs)
 # -----------------------
-LOG_DIR = Path.home() / ".local/share/LunaHR/logs"
-LOG_DIR.mkdir(parents=True, exist_ok=True)
-LOG_FILE = LOG_DIR / "lunahr.log"
-
 logger = logging.getLogger("lunahr")
 logger.setLevel(logging.INFO)
 
@@ -68,10 +130,6 @@ class TimeAxis(DateAxisItem):
 # ViewBox with "user interacted" hook
 # -----------------------
 class LiveViewBox(pg.ViewBox):
-    """
-    A ViewBox that calls a callback whenever the user pans/zooms.
-    This makes "explore mode" reliable across pyqtgraph versions.
-    """
     def __init__(self, on_user_interaction=None, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._on_user_interaction = on_user_interaction
@@ -109,11 +167,22 @@ class RSSIWorker(QThread):
         self.timeout = timeout
 
     def run(self):
+        loop = asyncio.new_event_loop()
         try:
-            rssi = asyncio.run(self._scan_rssi())
+            asyncio.set_event_loop(loop)
+            rssi = loop.run_until_complete(self._scan_rssi())
             self.rssi_signal.emit(rssi)
         except Exception:
             self.rssi_signal.emit(None)
+        finally:
+            try:
+                loop.stop()
+            except Exception:
+                pass
+            try:
+                loop.close()
+            except Exception:
+                pass
 
     async def _scan_rssi(self):
         devices = await BleakScanner.discover(timeout=self.timeout)
@@ -124,9 +193,9 @@ class RSSIWorker(QThread):
 
 
 # -----------------------
-# Worker thread for BLE
+# Worker thread: Polar BLE
 # -----------------------
-class HRWorker(QThread):
+class PolarWorker(QThread):
     heart_rate_signal = Signal(int)
     status_signal = Signal(str)
     device_address_signal = Signal(str)
@@ -137,8 +206,27 @@ class HRWorker(QThread):
         self.running = True
 
     def run(self):
-        asyncio.set_event_loop(self.loop)
-        self.loop.run_until_complete(self.run_ble())
+        try:
+            asyncio.set_event_loop(self.loop)
+            self.loop.run_until_complete(self.run_ble())
+        finally:
+            # Ensure loop teardown is clean
+            try:
+                pending = asyncio.all_tasks(loop=self.loop)
+                for t in pending:
+                    t.cancel()
+                if pending:
+                    self.loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+            except Exception:
+                pass
+            try:
+                self.loop.stop()
+            except Exception:
+                pass
+            try:
+                self.loop.close()
+            except Exception:
+                pass
 
     async def run_ble(self):
         self.status_signal.emit("Searching for Polar H10...")
@@ -155,7 +243,6 @@ class HRWorker(QThread):
         logger.info(f"Connecting to {device.name} ({device.address})")
 
         try:
-            # Increased timeout helps with BlueZ service discovery stalls
             async with BleakClient(device, timeout=20.0) as client:
                 self.status_signal.emit("Connected. Streaming heart rate...")
                 logger.info("Connected. Starting HR notifications.")
@@ -172,6 +259,10 @@ class HRWorker(QThread):
 
                 logger.info("Stopping BLE worker loop.")
 
+        except asyncio.CancelledError:
+            # Normal during shutdown / restart; don't treat as a scary failure.
+            logger.info("Polar worker cancelled (likely due to reconnect/shutdown).")
+            self.status_signal.emit("Connection error: cancelled")
         except Exception as e:
             tb = traceback.format_exc()
             logger.error(f"Connection error: {e}\n{tb}")
@@ -189,80 +280,249 @@ class HRWorker(QThread):
 
 
 # -----------------------
+# Worker thread: Pulsoid (WebSocket)
+# -----------------------
+class PulsoidWorker(QThread):
+    heart_rate_signal = Signal(int)
+    status_signal = Signal(str)
+
+    def __init__(self, token: str):
+        super().__init__()
+        self.loop = asyncio.new_event_loop()
+        self.running = True
+        self.token = token.strip()
+
+    def run(self):
+        try:
+            asyncio.set_event_loop(self.loop)
+            self.loop.run_until_complete(self.run_ws())
+        finally:
+            try:
+                pending = asyncio.all_tasks(loop=self.loop)
+                for t in pending:
+                    t.cancel()
+                if pending:
+                    self.loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+            except Exception:
+                pass
+            try:
+                self.loop.stop()
+            except Exception:
+                pass
+            try:
+                self.loop.close()
+            except Exception:
+                pass
+
+    def stop(self):
+        self.running = False
+
+    async def run_ws(self):
+        if not self.token:
+            self.status_signal.emit("Pulsoid token not set (open Settings).")
+            logger.error("Pulsoid token not set.")
+            return
+
+        url = PULSOID_WS_URL.format(token=self.token)
+
+        self.status_signal.emit("Connecting to Pulsoid...")
+        logger.info("Connecting to Pulsoid WebSocket...")
+
+        try:
+            async with websockets.connect(url, ping_interval=20, ping_timeout=20) as ws:
+                self.status_signal.emit("Connected. Streaming heart rate (Pulsoid)...")
+                logger.info("Pulsoid connected. Listening for HR...")
+
+                while self.running:
+                    msg = await ws.recv()
+
+                    bpm = None
+                    try:
+                        data = json.loads(msg)
+                        bpm = data.get("data", {}).get("heart_rate", None)
+                        if bpm is None and "heart_rate" in data:
+                            bpm = data.get("heart_rate")
+                    except Exception:
+                        try:
+                            bpm = int(str(msg).strip())
+                        except Exception:
+                            bpm = None
+
+                    if bpm is not None:
+                        try:
+                            self.heart_rate_signal.emit(int(bpm))
+                        except Exception:
+                            pass
+
+        except asyncio.CancelledError:
+            logger.info("Pulsoid worker cancelled (likely due to reconnect/shutdown).")
+            self.status_signal.emit("Connection error: cancelled")
+        except Exception as e:
+            tb = traceback.format_exc()
+            logger.error(f"Pulsoid connection error: {e}\n{tb}")
+            self.status_signal.emit(f"Connection error: {e}\n{tb}")
+
+
+# -----------------------
+# Settings dialog
+# -----------------------
+class SettingsDialog(QDialog):
+    def __init__(self, parent, cfg: dict):
+        super().__init__(parent)
+        self.setWindowTitle("LunaHR Settings")
+        self.resize(520, 240)
+        self.cfg = dict(cfg)
+
+        form = QFormLayout()
+
+        self.source_combo = QComboBox()
+        self.source_combo.addItem("Polar H10 (BLE)", "polar")
+        self.source_combo.addItem("Pulsoid (WebSocket)", "pulsoid")
+        self.source_combo.setCurrentIndex(0 if self.cfg.get("source") == "polar" else 1)
+
+        self.pulsoid_token = QLineEdit()
+        self.pulsoid_token.setPlaceholderText("Pulsoid access token (data:heart_rate:read)")
+        self.pulsoid_token.setText(self.cfg.get("pulsoid_token", ""))
+        self.pulsoid_token.setEchoMode(QLineEdit.Password)
+
+        self.osc_host = QLineEdit()
+        self.osc_host.setText(self.cfg.get("osc_host", "127.0.0.1"))
+
+        self.osc_ports = QLineEdit()
+        ports = self.cfg.get("osc_ports", [9000])
+        ports_str = ",".join(str(p) for p in ports) if isinstance(ports, list) else str(ports)
+        self.osc_ports.setText(ports_str)
+        self.osc_ports.setPlaceholderText("9000  (or 9000,9001,9002)")
+
+        self.theme_combo = QComboBox()
+        self.theme_combo.addItem("Dark", "dark")
+        self.theme_combo.addItem("Light", "light")
+        self.theme_combo.setCurrentIndex(0 if self.cfg.get("theme") == "dark" else 1)
+
+        form.addRow("Data source", self.source_combo)
+        form.addRow("Pulsoid token", self.pulsoid_token)
+        form.addRow("OSC host", self.osc_host)
+        form.addRow("OSC port", self.osc_ports)
+        form.addRow("Theme", self.theme_combo)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+
+        layout = QVBoxLayout()
+        layout.addLayout(form)
+        layout.addWidget(buttons)
+        self.setLayout(layout)
+
+        self.source_combo.currentIndexChanged.connect(self._update_enabled)
+        self._update_enabled()
+
+    def _update_enabled(self):
+        src = self.source_combo.currentData()
+        self.pulsoid_token.setEnabled(src == "pulsoid")
+
+    def get_config(self) -> dict:
+        cfg = dict(self.cfg)
+        cfg["source"] = self.source_combo.currentData()
+        cfg["pulsoid_token"] = self.pulsoid_token.text().strip()
+        cfg["osc_host"] = self.osc_host.text().strip() or "127.0.0.1"
+
+        ports_text = self.osc_ports.text().strip()
+        ports = []
+        for part in ports_text.split(","):
+            part = part.strip()
+            if part.isdigit():
+                ports.append(int(part))
+        cfg["osc_ports"] = ports if ports else [9000]
+
+        cfg["theme"] = self.theme_combo.currentData()
+        return cfg
+
+
+# -----------------------
 # Main Window
 # -----------------------
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("LunaHR - Polar H10")
+        self.setWindowTitle("LunaHR - HR to OSC")
         self.resize(900, 600)
 
-        self.osc_client = SimpleUDPClient("127.0.0.1", 9000)
+        self.cfg = load_config()
         logger.info("LunaHR started.")
 
         # Theme
-        self.dark_mode = True
+        self.dark_mode = (self.cfg.get("theme") == "dark")
 
-        # BLE / watchdog state
+        # OSC clients
+        self.osc_clients = []
+        self._build_osc_clients()
+
+        # Worker state
         self.worker = None
+        self.current_source = self.cfg.get("source", "polar")
+
+        # HR / watchdog state
         self.last_hr_time = None
         self.last_hr_value = None
         self.reconnect_timeout = 30
         self.reconnecting = False
-
-        # Reconnect scheduling guard (prevents "reconnect storms")
         self._reconnect_scheduled = False
         self.reconnect_delay_seconds = 5
+        self.reconnect_max_seconds = 180
+        self.reconnect_started_at = None
 
-        # Reconnect overall limit (no backoff, just give up after X seconds)
-        self.reconnect_max_seconds = 180  # 3 minutes
-        self.reconnect_started_at = None  # epoch time when reconnect cycle began
+        # reconnect cooldown bookkeeping
+        self.last_reconnect_attempt_at = None
 
-        # RSSI state
+        # RSSI state (Polar only)
         self.device_address = None
         self.last_rssi_value = None
         self.last_rssi_time = None
         self.rssi_worker = None
+        self._last_rssi_request_at = None
 
         # Graph live-follow behavior
-        self.window_seconds = 30 * 60      # 30 minutes visible when live
+        self.window_seconds = 30 * 60
         self.follow_live = True
         self.last_user_interaction = None
-        self.snap_back_seconds = 30        # auto return to live after 30s
+        self.snap_back_seconds = 30
         self._programmatic_range_change = False
 
         # Buttons (top row)
-        self.connect_btn = QPushButton("Connect to Polar H10")
+        self.connect_btn = QPushButton("Connect")
         self.connect_btn.clicked.connect(self.on_connect_clicked)
+
+        self.settings_btn = QPushButton("⚙ Settings")
+        self.settings_btn.clicked.connect(self.open_settings)
 
         self.open_logs_btn = QPushButton("📂 Open Logs")
         self.open_logs_btn.setToolTip(str(LOG_DIR))
         self.open_logs_btn.clicked.connect(self.open_log_dir)
 
-        self.theme_btn = QPushButton("🌙 Dark")
-        self.theme_btn.setToolTip("Toggle light/dark theme")
-        self.theme_btn.clicked.connect(self.toggle_theme)
-
         top_row = QHBoxLayout()
         top_row.addWidget(self.connect_btn)
         top_row.addStretch(1)
+        top_row.addWidget(self.settings_btn)
         top_row.addWidget(self.open_logs_btn)
-        top_row.addWidget(self.theme_btn)
 
-        # Live button row (right-aligned, closer to graph)
+        # Live button (same row as HR, right aligned)
         self.live_btn = QPushButton("🔴 Live")
         self.live_btn.setToolTip("Snap back to live tracking")
         self.live_btn.clicked.connect(self.snap_to_live)
 
-        live_row = QHBoxLayout()
-        live_row.addStretch(1)
-        live_row.addWidget(self.live_btn)
-
-        # Status + HR label
+        # Status
         self.status_label = QLabel("Status: Idle")
+
+        # Heart rate label
         self.hr_label = QLabel("Heart Rate: -- bpm")
         self.hr_label.setAlignment(Qt.AlignLeft)
         self.hr_label.setStyleSheet("font-size: 24px; font-weight: bold;")
+
+        hr_row = QHBoxLayout()
+        hr_row.addWidget(self.hr_label)
+        hr_row.addStretch(1)
+        hr_row.addWidget(self.live_btn)
 
         # Graph
         time_axis = TimeAxis(orientation="bottom")
@@ -271,18 +531,16 @@ class MainWindow(QMainWindow):
         self.plot.showGrid(x=True, y=True)
         self.plot.setLabel("left", "BPM")
         self.plot.setLabel("bottom", "Time (HH:MM:SS)")
-        self.viewbox.setMouseEnabled(x=True, y=False)  # pan/zoom in X, keep Y stable-ish
+        self.viewbox.setMouseEnabled(x=True, y=False)
 
-        self.x_data = []  # epoch timestamps
-        self.y_data = []  # bpm
+        self.x_data = []
+        self.y_data = []
         self.curve = self.plot.plot([], [], pen=pg.mkPen(width=2))
 
-        # Layout
         layout = QVBoxLayout()
         layout.addLayout(top_row)
         layout.addWidget(self.status_label)
-        layout.addWidget(self.hr_label)
-        layout.addLayout(live_row)      # moved live button closer to the graph
+        layout.addLayout(hr_row)
         layout.addWidget(self.plot)
 
         container = QWidget()
@@ -290,46 +548,89 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(container)
 
         self.apply_theme()
+        self.update_live_button()
 
-        # Watchdog timer for HR stall reconnect
+        # Timers
         self.watchdog = QTimer()
         self.watchdog.timeout.connect(self.check_heartbeat_timeout)
         self.watchdog.start(5000)
 
-        # Heartbeat logger
         self.heartbeat_timer = QTimer()
         self.heartbeat_timer.timeout.connect(self.log_heartbeat_status)
         self.heartbeat_timer.start(60000)
 
-        # Snap-back timer (checks explore idle time)
         self.snapback_timer = QTimer()
         self.snapback_timer.timeout.connect(self.check_snapback)
         self.snapback_timer.start(1000)
 
     # ---------------------------
-    # Helpers: entering/leaving reconnect cycle
+    # Live button state
+    # ---------------------------
+    def update_live_button(self):
+        self.live_btn.setText("🔴 Live" if self.follow_live else "🟡 Live")
+
+    # ---------------------------
+    # Config / Settings
+    # ---------------------------
+    def _build_osc_clients(self):
+        host = self.cfg.get("osc_host", "127.0.0.1")
+        ports = self.cfg.get("osc_ports", [9000])
+        if isinstance(ports, int):
+            ports = [ports]
+        self.osc_clients = [SimpleUDPClient(host, int(p)) for p in ports]
+        logger.info(f"OSC target: {host}:{','.join(str(p) for p in ports)}")
+
+    def open_settings(self):
+        dlg = SettingsDialog(self, self.cfg)
+        if dlg.exec() == QDialog.Accepted:
+            self.cfg = dlg.get_config()
+            save_config(self.cfg)
+
+            self.dark_mode = (self.cfg.get("theme") == "dark")
+            self.apply_theme()
+
+            self._build_osc_clients()
+            self.current_source = self.cfg.get("source", "polar")
+
+            self.status_label.setText(f"Status: Settings saved (source: {self.current_source}).")
+            logger.info(f"Settings saved. Source: {self.current_source}")
+
+    # ---------------------------
+    # Helpers: reconnect cycle
     # ---------------------------
     def _enter_reconnect_cycle(self):
         if not self.reconnect_started_at:
             self.reconnect_started_at = time.time()
             logger.info(f"Reconnect cycle started (max {self.reconnect_max_seconds}s).")
 
-    def _exit_reconnect_cycle_to_idle(self, reason: str):
-        # Stop trying, go back to idle, let user click Connect again
-        self.reconnecting = False
-        self._reconnect_scheduled = False
-        self.reconnect_started_at = None
-        self.last_hr_time = None
-
-        self.status_label.setText(f"Status: Idle ({reason})")
-        logger.warning(f"Reconnect cycle ended → Idle ({reason})")
-
-        self.connect_btn.setEnabled(True)
-
     def _reconnect_time_exceeded(self) -> bool:
         if not self.reconnect_started_at:
             return False
         return (time.time() - self.reconnect_started_at) >= self.reconnect_max_seconds
+
+    def _exit_reconnect_cycle_to_idle(self, reason: str):
+        self.reconnecting = False
+        self._reconnect_scheduled = False
+        self.reconnect_started_at = None
+        self.last_hr_time = None
+        self.last_reconnect_attempt_at = None
+
+        self.status_label.setText(f"Status: Idle ({reason})")
+        logger.warning(f"Reconnect cycle ended → Idle ({reason})")
+        self.connect_btn.setEnabled(True)
+
+        self.stop_worker()
+
+    def _can_attempt_reconnect_now(self) -> bool:
+        if self.last_reconnect_attempt_at is None:
+            return True
+        return (time.time() - self.last_reconnect_attempt_at) >= RECONNECT_COOLDOWN_SECONDS
+
+    def _remaining_reconnect_cooldown(self) -> float:
+        if self.last_reconnect_attempt_at is None:
+            return 0.0
+        rem = RECONNECT_COOLDOWN_SECONDS - (time.time() - self.last_reconnect_attempt_at)
+        return rem if rem > 0 else 0.0
 
     # ---------------------------
     # Open logs dir
@@ -343,16 +644,16 @@ class MainWindow(QMainWindow):
     def on_user_interaction(self):
         if self._programmatic_range_change:
             return
-
         if self.follow_live:
             self.follow_live = False
+            self.update_live_button()
             logger.info("Graph set to explore mode (live-follow paused).")
-
         self.last_user_interaction = time.time()
 
     def snap_to_live(self):
         self.follow_live = True
         self.last_user_interaction = None
+        self.update_live_button()
         self.update_live_view()
 
     def check_snapback(self):
@@ -365,14 +666,10 @@ class MainWindow(QMainWindow):
             self.snap_to_live()
 
     def update_live_view(self):
-        if not self.follow_live:
+        if not self.follow_live or not self.x_data:
             return
-        if not self.x_data:
-            return
-
         now = self.x_data[-1]
         start = now - self.window_seconds
-
         self._programmatic_range_change = True
         try:
             self.plot.setXRange(start, now, padding=0.0)
@@ -382,15 +679,10 @@ class MainWindow(QMainWindow):
     # ---------------------------
     # Theme
     # ---------------------------
-    def toggle_theme(self):
-        self.dark_mode = not self.dark_mode
-        self.apply_theme()
-
     def apply_theme(self):
         pink = "#ff4fd8"
 
         if self.dark_mode:
-            self.theme_btn.setText("🌙 Dark")
             self.setStyleSheet("""
                 QWidget { background-color: #121212; color: #EAEAEA; }
                 QPushButton { background-color: #2A2A2A; border: 1px solid #444; padding: 6px 10px; }
@@ -402,7 +694,6 @@ class MainWindow(QMainWindow):
             self.plot.getAxis("left").setTextPen(pg.mkPen("#EAEAEA"))
             self.plot.getAxis("bottom").setTextPen(pg.mkPen("#EAEAEA"))
         else:
-            self.theme_btn.setText("☀️ Light")
             self.setStyleSheet("""
                 QWidget { background-color: #FFFFFF; color: #111111; }
                 QPushButton { background-color: #F0F0F0; border: 1px solid #CCC; padding: 6px 10px; }
@@ -417,41 +708,52 @@ class MainWindow(QMainWindow):
         self.curve.setPen(pg.mkPen(pink, width=2))
 
     # ---------------------------
-    # BLE wiring
+    # Worker start/stop
     # ---------------------------
+    def stop_worker(self):
+        if not self.worker:
+            return
+        try:
+            if hasattr(self.worker, "stop"):
+                self.worker.stop()
+            self.worker.quit()
+            self.worker.wait(3000)
+        except Exception:
+            pass
+        self.worker = None
+
     def on_connect_clicked(self):
         self.connect_btn.setEnabled(False)
 
-        # User initiated connection: reset reconnect cycle state
         self.reconnecting = False
         self._reconnect_scheduled = False
         self.reconnect_started_at = None
+        self.last_reconnect_attempt_at = None
 
         self.status_label.setText("Status: Connecting…")
         self.start_worker()
 
     def start_worker(self):
-        if self.worker:
-            try:
-                self.worker.stop()
-                self.worker.quit()
-                self.worker.wait(3000)
-            except Exception:
-                pass
+        self.stop_worker()
 
-        # Safety guard: don't start a new worker if the old one is still running
-        if self.worker and self.worker.isRunning():
-            logger.warning("Old HRWorker still running; delaying restart by 1 second.")
-            QTimer.singleShot(1000, self.start_worker)
-            return
+        src = self.cfg.get("source", "polar")
+        self.current_source = src
 
-        self.worker = HRWorker()
-        self.worker.heart_rate_signal.connect(self.on_hr_update)
-        self.worker.status_signal.connect(self.on_status_update)
-        self.worker.device_address_signal.connect(self.on_device_address)
+        if src == "polar":
+            self.worker = PolarWorker()
+            self.worker.heart_rate_signal.connect(self.on_hr_update)
+            self.worker.status_signal.connect(self.on_status_update)
+            self.worker.device_address_signal.connect(self.on_device_address)
+            logger.info("Starting Polar worker.")
+        else:
+            token = self.cfg.get("pulsoid_token", "")
+            self.worker = PulsoidWorker(token=token)
+            self.worker.heart_rate_signal.connect(self.on_hr_update)
+            self.worker.status_signal.connect(self.on_status_update)
+            logger.info("Starting Pulsoid worker.")
+
         self.worker.start()
-
-        logger.info("HRWorker started.")
+        logger.info(f"Worker started (source={src}).")
 
     def on_device_address(self, addr: str):
         self.device_address = addr
@@ -461,11 +763,11 @@ class MainWindow(QMainWindow):
     # HR updates
     # ---------------------------
     def on_hr_update(self, bpm: int):
-        # Reconnect is considered successful once HR resumes
         if self.reconnecting:
             self.reconnecting = False
             self._reconnect_scheduled = False
             self.reconnect_started_at = None
+            self.last_reconnect_attempt_at = None
             logger.info("Reconnected successfully (HR received).")
 
         self.last_hr_time = time.time()
@@ -478,7 +780,7 @@ class MainWindow(QMainWindow):
         self.y_data.append(bpm)
         self.curve.setData(self.x_data, self.y_data)
 
-        logger.info(f"HR {bpm} bpm")
+        logger.info(f"HR {bpm} bpm (source={self.current_source})")
 
         self.update_live_view()
         self.send_heart_rate_osc(bpm)
@@ -492,10 +794,11 @@ class MainWindow(QMainWindow):
             tens_hr = (heart_rate // 10) % 10
             hundreds_hr = (heart_rate // 100) % 10
 
-            self.osc_client.send_message("/avatar/parameters/hr/ones_hr", ones_hr)
-            self.osc_client.send_message("/avatar/parameters/hr/tens_hr", tens_hr)
-            self.osc_client.send_message("/avatar/parameters/hr/hundreds_hr", hundreds_hr)
-            self.osc_client.send_message("/avatar/parameters/hr/heart_rate", heart_rate)
+            for client in self.osc_clients:
+                client.send_message("/avatar/parameters/hr/ones_hr", ones_hr)
+                client.send_message("/avatar/parameters/hr/tens_hr", tens_hr)
+                client.send_message("/avatar/parameters/hr/hundreds_hr", hundreds_hr)
+                client.send_message("/avatar/parameters/hr/heart_rate", heart_rate)
         except Exception as e:
             logger.error(f"Error sending OSC: {e}")
             print(f"Error sending OSC: {e}")
@@ -509,7 +812,6 @@ class MainWindow(QMainWindow):
 
         lower = text.lower()
 
-        # If the worker reports a connection error, proactively reconnect (within the 3-min window)
         if "connection error" in lower:
             if not self.reconnecting:
                 self.reconnecting = True
@@ -519,23 +821,21 @@ class MainWindow(QMainWindow):
                 self._exit_reconnect_cycle_to_idle("reconnect timeout")
                 return
 
-            # Prevent watchdog cascade
             self.last_hr_time = None
             logger.warning("Connection error reported; initiating reconnect.")
             self.reconnect()
             return
 
         if ("error" in lower or "not found" in lower or "failed" in lower) and not self.reconnecting:
-            QMessageBox.warning(self, "BLE", text)
+            QMessageBox.warning(self, "Source", text)
             self.connect_btn.setEnabled(True)
 
     # ---------------------------
     # Watchdog reconnect
     # ---------------------------
     def check_heartbeat_timeout(self):
-        # If we are already reconnecting or have one scheduled, don't trigger again
+        # If we're already reconnecting/scheduled, just check timeout cutoff
         if self.reconnecting or self._reconnect_scheduled:
-            # If reconnecting, check if we should give up and go idle
             if self.reconnecting and self._reconnect_time_exceeded():
                 self._exit_reconnect_cycle_to_idle("reconnect timeout")
             return
@@ -548,7 +848,6 @@ class MainWindow(QMainWindow):
             self.reconnecting = True
             self._enter_reconnect_cycle()
 
-            # IMPORTANT: clear so watchdog doesn't repeatedly trigger while reconnecting
             self.last_hr_time = None
 
             msg = f"No HR received for {int(elapsed)}s → Reconnecting..."
@@ -562,30 +861,29 @@ class MainWindow(QMainWindow):
             self.reconnect()
 
     def reconnect(self):
-        # Ensure only one reconnect attempt is scheduled at a time
         if self._reconnect_scheduled:
             return
-
-        # If we’re reconnecting too long, stop.
         if self.reconnecting and self._reconnect_time_exceeded():
             self._exit_reconnect_cycle_to_idle("reconnect timeout")
             return
 
+        # Cooldown to avoid thrashing DBus and triggering dbus_fast cleanup races
+        if not self._can_attempt_reconnect_now():
+            rem = self._remaining_reconnect_cooldown()
+            self._reconnect_scheduled = True
+            logger.info(f"Reconnect cooldown active; retrying in {rem:.1f}s...")
+            QTimer.singleShot(int(max(rem, 0.5) * 1000), self._restart_connection)
+            return
+
+        self.last_reconnect_attempt_at = time.time()
+
         self._reconnect_scheduled = True
+        self.stop_worker()
 
-        try:
-            if self.worker:
-                self.worker.stop()
-                self.worker.quit()
-                self.worker.wait(3000)
-        except Exception:
-            pass
-
-        logger.info(f"Attempting BLE reconnect in {self.reconnect_delay_seconds} seconds...")
+        logger.info(f"Attempting reconnect in {self.reconnect_delay_seconds} seconds...")
         QTimer.singleShot(int(self.reconnect_delay_seconds * 1000), self._restart_connection)
 
     def _restart_connection(self):
-        # Keep reconnecting=True until HR resumes
         self._reconnect_scheduled = False
 
         if self.reconnecting and self._reconnect_time_exceeded():
@@ -596,7 +894,7 @@ class MainWindow(QMainWindow):
         self.start_worker()
 
     # ---------------------------
-    # Heartbeat log + RSSI
+    # Heartbeat log + RSSI (Polar only)
     # ---------------------------
     def log_heartbeat_status(self):
         self.request_rssi_update()
@@ -605,17 +903,35 @@ class MainWindow(QMainWindow):
             last_hr_ts = datetime.fromtimestamp(self.last_hr_time).strftime("%H:%M:%S")
 
             rssi_part = "RSSI: n/a"
-            if self.last_rssi_time and (time.time() - self.last_rssi_time) < 90:
-                if self.last_rssi_value is not None:
-                    rssi_part = f"RSSI: {self.last_rssi_value} dBm"
+            if self.current_source == "polar":
+                if self.last_rssi_time and (time.time() - self.last_rssi_time) < 90:
+                    if self.last_rssi_value is not None:
+                        rssi_part = f"RSSI: {self.last_rssi_value} dBm"
 
-            logger.info(f"Still connected, last HR at {last_hr_ts} ({self.last_hr_value} bpm), {rssi_part}")
+            logger.info(
+                f"Still connected, last HR at {last_hr_ts} ({self.last_hr_value} bpm), "
+                f"{rssi_part}, source={self.current_source}"
+            )
         else:
-            logger.warning("Still running, but no heart rate received yet.")
+            logger.warning(f"Still running, but no heart rate received yet. source={self.current_source}")
 
     def request_rssi_update(self):
+        # Polar only
+        if self.current_source != "polar":
+            return
         if not self.device_address:
             return
+
+        # Don't add DBus load while reconnecting (this is where the socket/EOF spam usually comes from)
+        if self.reconnecting or self._reconnect_scheduled:
+            return
+
+        # Rate limit (even if some future code path calls it more often)
+        now = time.time()
+        if self._last_rssi_request_at and (now - self._last_rssi_request_at) < RSSI_MIN_INTERVAL_SECONDS:
+            return
+        self._last_rssi_request_at = now
+
         if self.rssi_worker and self.rssi_worker.isRunning():
             return
 
