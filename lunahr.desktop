@@ -3,6 +3,6 @@ Type=Application
 Name=LunaHR
 Exec=lunahr
 Icon=lunahr
-Comment=Heart rate monitor for VRChat with Polar H10 (BLE) and Pulsoid support
+Comment=Heart rate monitor for VRChat OSC with Polar H10 (BLE) and Pulsoid support
 Terminal=false
 Categories=Utility;
