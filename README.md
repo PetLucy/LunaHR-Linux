@@ -3,7 +3,7 @@
 <img src="lunahr.png" width="200" height="200" />
 
 This fork is to port [ImLunaUwU](https://github.com/ImLunaUwU)'s [LunaHR](https://github.com/ImLunaUwU/LunaHR) to Linux.<br/>
-This allows us to use and create vrchat avatars with LunaHR assets while on Linux.<br/>
+This allows using VRChat avatars with LunaHR assets while on Linux.<br/>
 
 ### Polar H10 devices are supported via direct bluetooth connection
 ### Pulsoid devices are also supported
@@ -11,7 +11,7 @@ This allows us to use and create vrchat avatars with LunaHR assets while on Linu
 
 [Consider supporting the original creator LunaUwU on Ko-Fi :3](https://ko-fi.com/imlunauwu)
 
-[Please Only support me if you're feeling extra generous after supporting LunaUwU](https://ko-fi.com/pet_lucy)
+[Please only support me if you're feeling extra generous after supporting LunaUwU](https://ko-fi.com/pet_lucy)
 
 
 ## Installation
@@ -36,7 +36,7 @@ If you have connection issues, please unpair and re-pair the device and try agai
 
 #### Pulsoid
 1) Verify Pulsoid mode is selected in the app settings.
-2) Get/create a token for your pulsoid account at https://pulsoid.net/ui/keys
+2) [Get/create a token for your pulsoid account.](https://pulsoid.net/ui/keys)
 3) Add your pulsoid token in the settings section of the application and save.
 4) Press "Connect".
 
