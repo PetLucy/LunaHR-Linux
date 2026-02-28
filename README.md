@@ -13,6 +13,7 @@ This allows using VRChat avatars with LunaHR assets while on Linux.<br/>
 
 [Please only support me if you're feeling extra generous after supporting LunaUwU](https://ko-fi.com/pet_lucy)
 
+<img src="example.png">
 
 ## Installation
 
