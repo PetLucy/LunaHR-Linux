@@ -41,7 +41,7 @@ If you have connection issues, please unpair and re-pair the device and try agai
 3) Add your pulsoid token in the settings section of the application and save.
 4) Press "Connect".
 
-### Avatar (mostly copied from the main branch README)
+### Avatar
 The needed prefabs are in the unitypackages (see links above and in releases section). Avatar setup is as simple as any other VRCFury asset, and you should be able to drag and drop them onto your avatar.
 
 *Please note that I did not create these prefabs; all credit should go to the original creator ImLunaUwU*
@@ -63,7 +63,7 @@ VRCFury should take care of all setup from this point.
 
 Feel free to customize materials to your liking.
 
-## Credits and info (copied from main branch README)
+## Credits and info
 HEAVILY inspired by the (now inactive) project here: https://github.com/200Tigersbloxed/HRtoVRChat_OSC/
 
 This project does NOT use the same parameters as the one by 200Tigersbloxed. It does use less though.
