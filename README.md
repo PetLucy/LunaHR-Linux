@@ -30,10 +30,8 @@ This allows using VRChat avatars with LunaHR assets while on Linux.<br/>
 ### Application
 #### Polar H10
 1) Verify Polar H10 mode is selected in the app settings.
-2) Ensure your Polar H10 is connected via bluetooth to your PC.
+2) Ensure your Polar H10 is a paired bluetooth device and that you're wearing it (slightly wet the surface between your body and the H10 electrode band for best results).
 3) Press the "Connect" button in the app.
-
-If you have connection issues, please unpair and re-pair the device and try again.<br/>
 
 #### Pulsoid
 1) Verify Pulsoid mode is selected in the app settings.
