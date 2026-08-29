@@ -4,6 +4,7 @@ import time
 import logging
 import traceback
 import json
+from importlib.metadata import version as package_version, PackageNotFoundError
 from datetime import datetime
 from pathlib import Path
 from logging.handlers import RotatingFileHandler
@@ -22,8 +23,8 @@ from pythonosc.udp_client import SimpleUDPClient
 import pyqtgraph as pg
 from pyqtgraph.graphicsItems.DateAxisItem import DateAxisItem
 
-# Pulsoid source
-import websockets
+# Pulsoid source (explicitly use the modern asyncio API; websockets 17 switched top-level aliases)
+from websockets.asyncio.client import connect as websocket_connect
 
 
 # -----------------------
@@ -34,7 +35,6 @@ PULSOID_WS_URL = "wss://dev.pulsoid.net/api/v1/data/real_time?access_token={toke
 
 # Reconnect / DBus churn controls
 RECONNECT_COOLDOWN_SECONDS = 15       # prevents rapid retry storms
-RSSI_MIN_INTERVAL_SECONDS = 60        # rate-limit RSSI scans
 
 
 # -----------------------
@@ -156,127 +156,139 @@ class LiveViewBox(pg.ViewBox):
 
 
 # -----------------------
-# RSSI scan worker (best effort)
-# -----------------------
-class RSSIWorker(QThread):
-    rssi_signal = Signal(object)  # int or None
-
-    def __init__(self, address: str, timeout: float = 2.0):
-        super().__init__()
-        self.address = address
-        self.timeout = timeout
-
-    def run(self):
-        loop = asyncio.new_event_loop()
-        try:
-            asyncio.set_event_loop(loop)
-            rssi = loop.run_until_complete(self._scan_rssi())
-            self.rssi_signal.emit(rssi)
-        except Exception:
-            self.rssi_signal.emit(None)
-        finally:
-            try:
-                loop.stop()
-            except Exception:
-                pass
-            try:
-                loop.close()
-            except Exception:
-                pass
-
-    async def _scan_rssi(self):
-        devices = await BleakScanner.discover(timeout=self.timeout)
-        for d in devices:
-            if getattr(d, "address", None) == self.address:
-                return getattr(d, "rssi", None)
-        return None
-
-
-# -----------------------
 # Worker thread: Polar BLE
 # -----------------------
 class PolarWorker(QThread):
     heart_rate_signal = Signal(int)
     status_signal = Signal(str)
     device_address_signal = Signal(str)
+    discovery_rssi_signal = Signal(object)  # int or None; RSSI captured during discovery only
 
     def __init__(self):
         super().__init__()
-        self.loop = asyncio.new_event_loop()
+        self.loop = None
+        self.task = None
         self.running = True
 
     def run(self):
+        self.loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self.loop)
+        self.task = self.loop.create_task(self.run_ble())
         try:
-            asyncio.set_event_loop(self.loop)
-            self.loop.run_until_complete(self.run_ble())
+            self.loop.run_until_complete(self.task)
+        except asyncio.CancelledError:
+            # Expected when the GUI stops/restarts the worker.
+            logger.info("Polar worker task cancelled.")
         finally:
-            # Ensure loop teardown is clean
             try:
                 pending = asyncio.all_tasks(loop=self.loop)
-                for t in pending:
-                    t.cancel()
+                for task in pending:
+                    task.cancel()
                 if pending:
                     self.loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
             except Exception:
                 pass
-            try:
-                self.loop.stop()
-            except Exception:
-                pass
+            self.task = None
             try:
                 self.loop.close()
             except Exception:
                 pass
+            self.loop = None
 
     async def run_ble(self):
         self.status_signal.emit("Searching for Polar H10...")
         logger.info("Searching for Polar H10...")
-        device = await self.find_polar()
+
+        device, discovery_rssi = await self.find_polar()
         if not device:
             self.status_signal.emit("Polar H10 not found.")
             logger.error("Polar H10 not found.")
             return
 
         self.device_address_signal.emit(device.address)
+        self.discovery_rssi_signal.emit(discovery_rssi)
 
         self.status_signal.emit(f"Connecting to {device.name}...")
         logger.info(f"Connecting to {device.name} ({device.address})")
 
+        disconnected = asyncio.Event()
+        running_loop = asyncio.get_running_loop()
+
+        def handle_disconnect(_client):
+            # Bleak may invoke this from backend callback code; schedule safely onto this worker loop.
+            try:
+                running_loop.call_soon_threadsafe(disconnected.set)
+            except RuntimeError:
+                pass
+
+        client = BleakClient(device, timeout=20.0, disconnected_callback=handle_disconnect)
         try:
-            async with BleakClient(device, timeout=20.0) as client:
-                self.status_signal.emit("Connected. Streaming heart rate...")
-                logger.info("Connected. Starting HR notifications.")
+            await client.connect()
+            self.status_signal.emit("Connected. Streaming heart rate...")
+            logger.info("Connected. Starting HR notifications.")
 
-                def handle_hr(_, data: bytearray):
-                    if len(data) > 1:
-                        hr_value = int(data[1])
-                        self.heart_rate_signal.emit(hr_value)
+            def handle_hr(_, data: bytearray):
+                # Bluetooth Heart Rate Measurement characteristic, per the GATT flags byte.
+                # Bit 0 = 0 -> uint8 HR; bit 0 = 1 -> uint16 little-endian HR.
+                if len(data) < 2:
+                    return
+                flags = data[0]
+                if flags & 0x01:
+                    if len(data) < 3:
+                        return
+                    hr_value = int.from_bytes(data[1:3], byteorder="little", signed=False)
+                else:
+                    hr_value = int(data[1])
+                self.heart_rate_signal.emit(hr_value)
 
-                await client.start_notify(HR_CHAR_UUID, handle_hr)
+            await client.start_notify(HR_CHAR_UUID, handle_hr)
 
-                while self.running:
-                    await asyncio.sleep(1)
-
-                logger.info("Stopping BLE worker loop.")
+            # Cancellation from stop() interrupts this immediately. A real BLE disconnect wakes it too.
+            await disconnected.wait()
+            if self.running:
+                logger.warning("Polar H10 disconnected unexpectedly.")
+                self.status_signal.emit("Connection error: Polar H10 disconnected")
 
         except asyncio.CancelledError:
-            # Normal during shutdown / restart; don't treat as a scary failure.
-            logger.info("Polar worker cancelled (likely due to reconnect/shutdown).")
-            self.status_signal.emit("Connection error: cancelled")
+            logger.info("Polar worker cancelled (reconnect/shutdown).")
+            raise
+        except TimeoutError:
+            logger.exception("Timed out connecting to Polar H10.")
+            self.status_signal.emit("Connection error: timed out connecting to Polar H10")
         except Exception as e:
             tb = traceback.format_exc()
             logger.error(f"Connection error: {e}\n{tb}")
-            self.status_signal.emit(f"Connection error: {e}\n{tb}")
+            self.status_signal.emit(f"Connection error: {e}")
+        finally:
+            if client.is_connected:
+                try:
+                    await client.disconnect()
+                except Exception:
+                    logger.exception("Error while disconnecting Polar H10 during worker cleanup.")
 
     async def find_polar(self):
-        devices = await BleakScanner.discover()
-        for d in devices:
-            if d.name and d.name.startswith("Polar H10"):
-                return d
-        return None
+        matched_rssi = None
+
+        def polar_filter(device, advertisement_data):
+            nonlocal matched_rssi
+            name = advertisement_data.local_name or device.name or ""
+            if name.startswith("Polar H10"):
+                matched_rssi = advertisement_data.rssi
+                return True
+            return False
+
+        device = await BleakScanner.find_device_by_filter(polar_filter, timeout=10.0)
+        return device, matched_rssi
 
     def stop(self):
         self.running = False
+        loop = self.loop
+        task = self.task
+        if loop is not None and task is not None and not task.done():
+            try:
+                loop.call_soon_threadsafe(task.cancel)
+            except RuntimeError:
+                pass
 
 
 # -----------------------
@@ -288,34 +300,44 @@ class PulsoidWorker(QThread):
 
     def __init__(self, token: str):
         super().__init__()
-        self.loop = asyncio.new_event_loop()
+        self.loop = None
+        self.task = None
         self.running = True
         self.token = token.strip()
 
     def run(self):
+        self.loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self.loop)
+        self.task = self.loop.create_task(self.run_ws())
         try:
-            asyncio.set_event_loop(self.loop)
-            self.loop.run_until_complete(self.run_ws())
+            self.loop.run_until_complete(self.task)
+        except asyncio.CancelledError:
+            logger.info("Pulsoid worker task cancelled.")
         finally:
             try:
                 pending = asyncio.all_tasks(loop=self.loop)
-                for t in pending:
-                    t.cancel()
+                for task in pending:
+                    task.cancel()
                 if pending:
                     self.loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
             except Exception:
                 pass
-            try:
-                self.loop.stop()
-            except Exception:
-                pass
+            self.task = None
             try:
                 self.loop.close()
             except Exception:
                 pass
+            self.loop = None
 
     def stop(self):
         self.running = False
+        loop = self.loop
+        task = self.task
+        if loop is not None and task is not None and not task.done():
+            try:
+                loop.call_soon_threadsafe(task.cancel)
+            except RuntimeError:
+                pass
 
     async def run_ws(self):
         if not self.token:
@@ -324,12 +346,11 @@ class PulsoidWorker(QThread):
             return
 
         url = PULSOID_WS_URL.format(token=self.token)
-
         self.status_signal.emit("Connecting to Pulsoid...")
         logger.info("Connecting to Pulsoid WebSocket...")
 
         try:
-            async with websockets.connect(url, ping_interval=20, ping_timeout=20) as ws:
+            async with websocket_connect(url, ping_interval=20, ping_timeout=20, open_timeout=15) as ws:
                 self.status_signal.emit("Connected. Streaming heart rate (Pulsoid)...")
                 logger.info("Pulsoid connected. Listening for HR...")
 
@@ -351,16 +372,16 @@ class PulsoidWorker(QThread):
                     if bpm is not None:
                         try:
                             self.heart_rate_signal.emit(int(bpm))
-                        except Exception:
-                            pass
+                        except (TypeError, ValueError):
+                            logger.warning("Pulsoid returned a non-integer heart-rate value: %r", bpm)
 
         except asyncio.CancelledError:
-            logger.info("Pulsoid worker cancelled (likely due to reconnect/shutdown).")
-            self.status_signal.emit("Connection error: cancelled")
+            logger.info("Pulsoid worker cancelled (reconnect/shutdown).")
+            raise
         except Exception as e:
             tb = traceback.format_exc()
             logger.error(f"Pulsoid connection error: {e}\n{tb}")
-            self.status_signal.emit(f"Connection error: {e}\n{tb}")
+            self.status_signal.emit(f"Connection error: {e}")
 
 
 # -----------------------
@@ -475,12 +496,10 @@ class MainWindow(QMainWindow):
         # reconnect cooldown bookkeeping
         self.last_reconnect_attempt_at = None
 
-        # RSSI state (Polar only)
+        # Polar discovery metadata. We deliberately do not run extra scans while connected;
+        # concurrent discovery was a likely source of BlueZ/D-Bus churn.
         self.device_address = None
-        self.last_rssi_value = None
-        self.last_rssi_time = None
-        self.rssi_worker = None
-        self._last_rssi_request_at = None
+        self.discovery_rssi = None
 
         # Graph live-follow behavior
         self.window_seconds = 30 * 60
@@ -608,6 +627,11 @@ class MainWindow(QMainWindow):
             return False
         return (time.time() - self.reconnect_started_at) >= self.reconnect_max_seconds
 
+    def _set_connect_button(self, text: str, enabled: bool):
+        """Update the Connect button immediately so Bluetooth work never feels like a dead click."""
+        self.connect_btn.setText(text)
+        self.connect_btn.setEnabled(enabled)
+
     def _exit_reconnect_cycle_to_idle(self, reason: str):
         self.reconnecting = False
         self._reconnect_scheduled = False
@@ -617,7 +641,7 @@ class MainWindow(QMainWindow):
 
         self.status_label.setText(f"Status: Idle ({reason})")
         logger.warning(f"Reconnect cycle ended → Idle ({reason})")
-        self.connect_btn.setEnabled(True)
+        self._set_connect_button("Connect", True)
 
         self.stop_worker()
 
@@ -711,30 +735,43 @@ class MainWindow(QMainWindow):
     # Worker start/stop
     # ---------------------------
     def stop_worker(self):
-        if not self.worker:
-            return
+        worker = self.worker
+        if not worker:
+            return True
+
+        # stop() cancels the worker's asyncio task; QThread.quit() is intentionally not used
+        # because these workers override run() and don't run Qt's thread event loop.
         try:
-            if hasattr(self.worker, "stop"):
-                self.worker.stop()
-            self.worker.quit()
-            self.worker.wait(3000)
+            worker.stop()
+            if not worker.wait(5000):
+                logger.error("Worker did not stop within 5 seconds; refusing to start overlapping BLE work.")
+                return False
         except Exception:
-            pass
-        self.worker = None
+            logger.exception("Error while stopping worker.")
+            return False
+
+        if self.worker is worker:
+            self.worker = None
+        return True
 
     def on_connect_clicked(self):
-        self.connect_btn.setEnabled(False)
+        # Give instant feedback before scanner startup; discovery itself may take several seconds.
+        self._set_connect_button("Searching…", False)
+        self.status_label.setText("Status: Searching for source…")
+        QApplication.processEvents()
 
         self.reconnecting = False
         self._reconnect_scheduled = False
         self.reconnect_started_at = None
         self.last_reconnect_attempt_at = None
 
-        self.status_label.setText("Status: Connecting…")
         self.start_worker()
 
     def start_worker(self):
-        self.stop_worker()
+        if self.worker and not self.stop_worker():
+            self.status_label.setText("Status: Waiting for previous worker to stop…")
+            self._set_connect_button("Connect", True)
+            return
 
         src = self.cfg.get("source", "polar")
         self.current_source = src
@@ -744,6 +781,7 @@ class MainWindow(QMainWindow):
             self.worker.heart_rate_signal.connect(self.on_hr_update)
             self.worker.status_signal.connect(self.on_status_update)
             self.worker.device_address_signal.connect(self.on_device_address)
+            self.worker.discovery_rssi_signal.connect(self.on_discovery_rssi)
             logger.info("Starting Polar worker.")
         else:
             token = self.cfg.get("pulsoid_token", "")
@@ -757,7 +795,14 @@ class MainWindow(QMainWindow):
 
     def on_device_address(self, addr: str):
         self.device_address = addr
-        logger.info(f"Device address set for RSSI scans: {addr}")
+        logger.info(f"Polar device address: {addr}")
+
+    def on_discovery_rssi(self, rssi):
+        self.discovery_rssi = rssi if isinstance(rssi, int) else None
+        if self.discovery_rssi is None:
+            logger.info("Polar discovery RSSI: n/a")
+        else:
+            logger.info(f"Polar discovery RSSI: {self.discovery_rssi} dBm")
 
     # ---------------------------
     # HR updates
@@ -812,6 +857,14 @@ class MainWindow(QMainWindow):
 
         lower = text.lower()
 
+        # Mirror the asynchronous BLE/WebSocket phase on the button itself.
+        if lower.startswith("searching for polar"):
+            self._set_connect_button("Searching…", False)
+        elif lower.startswith("connecting to") or lower.startswith("connecting to pulsoid"):
+            self._set_connect_button("Connecting…", False)
+        elif lower.startswith("connected."):
+            self._set_connect_button("Connected", False)
+
         if "connection error" in lower:
             if not self.reconnecting:
                 self.reconnecting = True
@@ -828,7 +881,7 @@ class MainWindow(QMainWindow):
 
         if ("error" in lower or "not found" in lower or "failed" in lower) and not self.reconnecting:
             QMessageBox.warning(self, "Source", text)
-            self.connect_btn.setEnabled(True)
+            self._set_connect_button("Connect", True)
 
     # ---------------------------
     # Watchdog reconnect
@@ -852,6 +905,7 @@ class MainWindow(QMainWindow):
 
             msg = f"No HR received for {int(elapsed)}s → Reconnecting..."
             self.status_label.setText(f"Status: {msg}")
+            self._set_connect_button("Reconnecting…", False)
             logger.warning(msg)
 
             if self._reconnect_time_exceeded():
@@ -878,7 +932,11 @@ class MainWindow(QMainWindow):
         self.last_reconnect_attempt_at = time.time()
 
         self._reconnect_scheduled = True
-        self.stop_worker()
+        if not self.stop_worker():
+            self._reconnect_scheduled = False
+            logger.warning("Previous worker is still stopping; reconnect will be retried shortly.")
+            QTimer.singleShot(1000, self.reconnect)
+            return
 
         logger.info(f"Attempting reconnect in {self.reconnect_delay_seconds} seconds...")
         QTimer.singleShot(int(self.reconnect_delay_seconds * 1000), self._restart_connection)
@@ -891,65 +949,45 @@ class MainWindow(QMainWindow):
             return
 
         self.status_label.setText("Status: Reconnecting…")
+        self._set_connect_button("Reconnecting…", False)
         self.start_worker()
 
     # ---------------------------
-    # Heartbeat log + RSSI (Polar only)
+    # Heartbeat log
     # ---------------------------
     def log_heartbeat_status(self):
-        self.request_rssi_update()
-
         if self.last_hr_time and self.last_hr_value is not None:
             last_hr_ts = datetime.fromtimestamp(self.last_hr_time).strftime("%H:%M:%S")
-
-            rssi_part = "RSSI: n/a"
-            if self.current_source == "polar":
-                if self.last_rssi_time and (time.time() - self.last_rssi_time) < 90:
-                    if self.last_rssi_value is not None:
-                        rssi_part = f"RSSI: {self.last_rssi_value} dBm"
-
+            rssi_part = ""
+            if self.current_source == "polar" and self.discovery_rssi is not None:
+                rssi_part = f", discovery RSSI: {self.discovery_rssi} dBm"
             logger.info(
-                f"Still connected, last HR at {last_hr_ts} ({self.last_hr_value} bpm), "
+                f"Still connected, last HR at {last_hr_ts} ({self.last_hr_value} bpm)"
                 f"{rssi_part}, source={self.current_source}"
             )
-        else:
-            logger.warning(f"Still running, but no heart rate received yet. source={self.current_source}")
+        elif self.worker:
+            logger.warning(f"Worker is running, but no heart rate received yet. source={self.current_source}")
 
-    def request_rssi_update(self):
-        # Polar only
-        if self.current_source != "polar":
-            return
-        if not self.device_address:
-            return
+    def closeEvent(self, event):
+        logger.info("LunaHR shutting down.")
+        self.watchdog.stop()
+        self.heartbeat_timer.stop()
+        self.snapback_timer.stop()
+        self.stop_worker()
+        event.accept()
 
-        # Don't add DBus load while reconnecting (this is where the socket/EOF spam usually comes from)
-        if self.reconnecting or self._reconnect_scheduled:
-            return
 
-        # Rate limit (even if some future code path calls it more often)
-        now = time.time()
-        if self._last_rssi_request_at and (now - self._last_rssi_request_at) < RSSI_MIN_INTERVAL_SECONDS:
-            return
-        self._last_rssi_request_at = now
-
-        if self.rssi_worker and self.rssi_worker.isRunning():
-            return
-
-        self.rssi_worker = RSSIWorker(self.device_address, timeout=2.0)
-        self.rssi_worker.rssi_signal.connect(self.on_rssi_update)
-        self.rssi_worker.start()
-
-    def on_rssi_update(self, rssi):
-        self.last_rssi_time = time.time()
-        self.last_rssi_value = rssi if isinstance(rssi, int) else None
-
-        if self.last_rssi_value is None:
-            logger.info("RSSI scan: n/a")
-        else:
-            logger.info(f"RSSI scan: {self.last_rssi_value} dBm")
+def log_runtime_versions():
+    logger.info("Python %s", sys.version.split()[0])
+    for package in ("bleak", "dbus-fast", "PySide6", "pyqtgraph", "python-osc", "websockets"):
+        try:
+            logger.info("Dependency %s=%s", package, package_version(package))
+        except PackageNotFoundError:
+            logger.warning("Dependency %s version unavailable", package)
 
 
 def main():
+    log_runtime_versions()
     app = QApplication(sys.argv)
     win = MainWindow()
     win.show()
