@@ -40,6 +40,12 @@ This allows using VRChat avatars with LunaHR assets while on Linux.<br/>
 3) Add your pulsoid token in the settings section of the application and save.
 4) Press "Connect".
 
+#### Command-line options
+LunaHR supports a few optional startup flags:</br>
+`--connect` — automatically connect using the configured heart-rate source on startup.</br>
+`--minimized` — start hidden in the system tray.</br>
+`--tray` — alias for `--minimized`.</br>
+
 ### Avatar
 The needed prefabs are in the unitypackages (see links above and in releases section). Avatar setup is as simple as any other VRCFury asset, and you should be able to drag and drop them onto your avatar.
 
