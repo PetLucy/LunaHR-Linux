@@ -1,4 +1,5 @@
 import sys
+import argparse
 import asyncio
 import time
 import logging
@@ -12,10 +13,11 @@ from logging.handlers import RotatingFileHandler
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QPushButton, QLabel,
     QVBoxLayout, QHBoxLayout, QWidget, QMessageBox,
-    QDialog, QFormLayout, QLineEdit, QComboBox, QDialogButtonBox
+    QDialog, QFormLayout, QLineEdit, QComboBox, QDialogButtonBox,
+    QSystemTrayIcon, QMenu
 )
 from PySide6.QtCore import QThread, Signal, Qt, QTimer, QUrl
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtGui import QDesktopServices, QIcon, QAction
 
 from bleak import BleakScanner, BleakClient
 from pythonosc.udp_client import SimpleUDPClient
@@ -35,6 +37,7 @@ PULSOID_WS_URL = "wss://dev.pulsoid.net/api/v1/data/real_time?access_token={toke
 
 # Reconnect / DBus churn controls
 RECONNECT_COOLDOWN_SECONDS = 15       # prevents rapid retry storms
+STREAMING_ICON_TIMEOUT_SECONDS = 5     # tray turns inactive if HR packets stop
 
 
 # -----------------------
@@ -55,6 +58,31 @@ DEFAULT_CONFIG = {
     "osc_ports": [9000],      # list of ints
     "theme": "dark",          # "dark" or "light"
 }
+
+
+def resource_path(filename: str) -> Path:
+    """Resolve bundled/source/package assets across PyInstaller, AppImage, and native installs."""
+    candidates = []
+
+    bundle_dir = getattr(sys, "_MEIPASS", None)
+    if bundle_dir:
+        candidates.append(Path(bundle_dir) / filename)
+
+    try:
+        candidates.append(Path(__file__).resolve().parent / filename)
+    except NameError:
+        pass
+
+    candidates.extend([
+        Path("/usr/share/lunahr") / filename,
+        Path("/usr/share/icons/hicolor/128x128/apps") / filename,
+    ])
+
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+
+    return candidates[0] if candidates else Path(filename)
 
 
 def load_config() -> dict:
@@ -501,6 +529,15 @@ class MainWindow(QMainWindow):
         self.device_address = None
         self.discovery_rssi = None
 
+        # Tray state
+        self.tray_icon = None
+        self.tray_active_icon = QIcon(str(resource_path("lunahr-tray-active.png")))
+        self.tray_inactive_icon = QIcon(str(resource_path("lunahr-tray-inactive.png")))
+        self.tray_show_hide_action = None
+        self.tray_connect_action = None
+        self._last_status_text = "Idle"
+        self._tray_streaming = False
+
         # Graph live-follow behavior
         self.window_seconds = 30 * 60
         self.follow_live = True
@@ -568,6 +605,7 @@ class MainWindow(QMainWindow):
 
         self.apply_theme()
         self.update_live_button()
+        self._setup_tray()
 
         # Timers
         self.watchdog = QTimer()
@@ -581,6 +619,110 @@ class MainWindow(QMainWindow):
         self.snapback_timer = QTimer()
         self.snapback_timer.timeout.connect(self.check_snapback)
         self.snapback_timer.start(1000)
+
+        self.tray_state_timer = QTimer()
+        self.tray_state_timer.timeout.connect(self._refresh_tray_state)
+        self.tray_state_timer.start(1000)
+        self._refresh_tray_state()
+
+    # ---------------------------
+    # Tray
+    # ---------------------------
+    def _setup_tray(self):
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            logger.warning("No system tray is available; tray controls disabled.")
+            return
+
+        self.tray_icon = QSystemTrayIcon(self)
+        if not self.tray_inactive_icon.isNull():
+            self.tray_icon.setIcon(self.tray_inactive_icon)
+        else:
+            logger.warning("Inactive tray icon asset was not found.")
+
+        menu = QMenu(self)
+
+        self.tray_show_hide_action = QAction("Hide LunaHR", self)
+        self.tray_show_hide_action.triggered.connect(self.toggle_window_visibility)
+        menu.addAction(self.tray_show_hide_action)
+
+        self.tray_connect_action = QAction("Connect", self)
+        self.tray_connect_action.triggered.connect(self.on_connect_clicked)
+        menu.addAction(self.tray_connect_action)
+
+        menu.addSeparator()
+        quit_action = QAction("Quit", self)
+        quit_action.triggered.connect(self.quit_application)
+        menu.addAction(quit_action)
+
+        self.tray_icon.setContextMenu(menu)
+        self.tray_icon.activated.connect(self._on_tray_activated)
+        self.tray_icon.setToolTip("LunaHR — Idle")
+        self.tray_icon.show()
+        logger.info("System tray icon initialized.")
+
+    def _on_tray_activated(self, reason):
+        if reason == QSystemTrayIcon.ActivationReason.Trigger:
+            self.toggle_window_visibility()
+
+    def toggle_window_visibility(self):
+        if self.isVisible():
+            self.hide()
+        else:
+            self.showNormal()
+            self.raise_()
+            self.activateWindow()
+        self._update_tray_menu_text()
+
+    def _update_tray_menu_text(self):
+        if self.tray_show_hide_action is not None:
+            self.tray_show_hide_action.setText("Hide LunaHR" if self.isVisible() else "Show LunaHR")
+
+    def _is_streaming(self) -> bool:
+        return (
+            self.last_hr_time is not None
+            and (time.time() - self.last_hr_time) <= STREAMING_ICON_TIMEOUT_SECONDS
+        )
+
+    def _refresh_tray_state(self):
+        if self.tray_icon is None:
+            return
+
+        streaming = self._is_streaming()
+        if streaming != self._tray_streaming:
+            self._tray_streaming = streaming
+            icon = self.tray_active_icon if streaming else self.tray_inactive_icon
+            if not icon.isNull():
+                self.tray_icon.setIcon(icon)
+
+        if streaming and self.last_hr_value is not None:
+            tooltip = f"LunaHR — Streaming • {self.last_hr_value} bpm"
+        else:
+            tooltip = f"LunaHR — {self._last_status_text}"
+        self.tray_icon.setToolTip(tooltip)
+
+        if self.tray_connect_action is not None:
+            self.tray_connect_action.setEnabled(not streaming)
+            self.tray_connect_action.setText("Reconnect" if self.worker else "Connect")
+
+        self._update_tray_menu_text()
+
+    def quit_application(self):
+        logger.info("Quit requested from tray.")
+        self.shutdown()
+        QApplication.instance().quit()
+
+    def shutdown(self):
+        if getattr(self, "_shutdown_started", False):
+            return
+        self._shutdown_started = True
+        logger.info("LunaHR shutting down.")
+        for timer_name in ("watchdog", "heartbeat_timer", "snapback_timer", "tray_state_timer"):
+            timer = getattr(self, timer_name, None)
+            if timer is not None:
+                timer.stop()
+        self.stop_worker()
+        if self.tray_icon is not None:
+            self.tray_icon.hide()
 
     # ---------------------------
     # Live button state
@@ -829,6 +971,7 @@ class MainWindow(QMainWindow):
 
         self.update_live_view()
         self.send_heart_rate_osc(bpm)
+        self._refresh_tray_state()
 
     # ---------------------------
     # OSC
@@ -854,6 +997,8 @@ class MainWindow(QMainWindow):
     def on_status_update(self, text: str):
         self.status_label.setText(f"Status: {text}")
         logger.info(f"Status: {text}")
+        self._last_status_text = text.splitlines()[0].strip() or "Idle"
+        self._refresh_tray_state()
 
         lower = text.lower()
 
@@ -875,6 +1020,7 @@ class MainWindow(QMainWindow):
                 return
 
             self.last_hr_time = None
+            self._refresh_tray_state()
             logger.warning("Connection error reported; initiating reconnect.")
             self.reconnect()
             return
@@ -902,6 +1048,7 @@ class MainWindow(QMainWindow):
             self._enter_reconnect_cycle()
 
             self.last_hr_time = None
+            self._refresh_tray_state()
 
             msg = f"No HR received for {int(elapsed)}s → Reconnecting..."
             self.status_label.setText(f"Status: {msg}")
@@ -969,12 +1116,9 @@ class MainWindow(QMainWindow):
             logger.warning(f"Worker is running, but no heart rate received yet. source={self.current_source}")
 
     def closeEvent(self, event):
-        logger.info("LunaHR shutting down.")
-        self.watchdog.stop()
-        self.heartbeat_timer.stop()
-        self.snapback_timer.stop()
-        self.stop_worker()
+        self.shutdown()
         event.accept()
+        QApplication.instance().quit()
 
 
 def log_runtime_versions():
@@ -986,11 +1130,45 @@ def log_runtime_versions():
             logger.warning("Dependency %s version unavailable", package)
 
 
+def parse_args(argv):
+    parser = argparse.ArgumentParser(description="LunaHR — heart rate to VRChat OSC")
+    parser.add_argument(
+        "--connect",
+        action="store_true",
+        help="Automatically start the configured heart-rate connection after launch.",
+    )
+    parser.add_argument(
+        "--minimized", "--tray",
+        dest="minimized",
+        action="store_true",
+        help="Start hidden in the system tray. --tray is an alias for --minimized.",
+    )
+    return parser.parse_known_args(argv)
+
+
 def main():
+    args, qt_args = parse_args(sys.argv[1:])
     log_runtime_versions()
-    app = QApplication(sys.argv)
+
+    app = QApplication([sys.argv[0], *qt_args])
+    app.setQuitOnLastWindowClosed(False)
+
     win = MainWindow()
-    win.show()
+    app.aboutToQuit.connect(win.shutdown)
+
+    if args.minimized and win.tray_icon is not None:
+        win.hide()
+        win._update_tray_menu_text()
+        logger.info("Started minimized to system tray.")
+    else:
+        if args.minimized and win.tray_icon is None:
+            logger.warning("--minimized requested but no system tray is available; showing window instead.")
+        win.show()
+
+    if args.connect:
+        logger.info("--connect requested; scheduling automatic connection.")
+        QTimer.singleShot(250, win.on_connect_clicked)
+
     sys.exit(app.exec())
 
 
